@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   LineChart,
   Line,
@@ -20,15 +20,26 @@ interface PriceChartProps {
 const TIME_RANGES = [
   { label: '7d', days: 7 },
   { label: '30d', days: 30 },
-  { label: 'All', days: 365 },
+  { label: '1y', days: 365 },
+  { label: '5y', days: 1825 },
 ]
 
-const GRANULARITIES = [
+const ALL_GRANULARITIES = [
   { label: '1m', minutes: 1 },
   { label: '5m', minutes: 5 },
   { label: '15m', minutes: 15 },
   { label: '1h', minutes: 60 },
+  { label: '1d', minutes: 1440 },
+  { label: '1w', minutes: 10080 },
 ]
+
+// Which granularities are available for each range, and the default index
+const RANGE_GRAN_CONFIG: Record<number, { available: number[]; defaultIdx: number }> = {
+  7:    { available: [0, 1, 2, 3],    defaultIdx: 2 },  // 1m,5m,15m,1h → default 15m
+  30:   { available: [1, 2, 3, 4],    defaultIdx: 2 },  // 5m,15m,1h,1d → default 1h
+  365:  { available: [3, 4, 5],       defaultIdx: 1 },  // 1h,1d,1w → default 1d
+  1825: { available: [4, 5],          defaultIdx: 1 },  // 1d,1w → default 1w
+}
 
 interface AggregatedPoint {
   time: string
@@ -41,40 +52,60 @@ function aggregateHistory(history: PriceHistory[], granMinutes: number): Aggrega
   const priced = history.filter((h) => h.price !== null && h.checked_at)
   if (!priced.length) return []
 
-  const buckets: Record<string, number[]> = {}
+  const buckets: Record<string, { prices: number[]; lows: number[]; highs: number[] }> = {}
 
   for (const h of priced) {
     const ts = new Date(h.checked_at!).getTime()
     const bucketTs = Math.floor(ts / (granMinutes * 60000)) * (granMinutes * 60000)
     const key = String(bucketTs)
-    if (!buckets[key]) buckets[key] = []
-    buckets[key].push(h.price!)
+    if (!buckets[key]) buckets[key] = { prices: [], lows: [], highs: [] }
+    buckets[key].prices.push(h.price!)
+    // Use server-side rollup low/high if available
+    if (h.low != null) buckets[key].lows.push(h.low)
+    if (h.high != null) buckets[key].highs.push(h.high)
   }
 
   return Object.entries(buckets)
     .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([key, prices]) => {
+    .map(([key, bucket]) => {
       const d = new Date(Number(key))
-      const fmt =
-        granMinutes >= 60
-          ? d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric' })
-          : d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      let fmt: string
+      if (granMinutes >= 1440) {
+        fmt = d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: granMinutes >= 10080 ? 'numeric' : undefined })
+      } else if (granMinutes >= 60) {
+        fmt = d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric' })
+      } else {
+        fmt = d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      }
+      // Prefer server-side aggregates when present
+      const low = bucket.lows.length ? Math.min(...bucket.lows) : Math.min(...bucket.prices)
+      const high = bucket.highs.length ? Math.max(...bucket.highs) : Math.max(...bucket.prices)
       return {
         time: fmt,
-        low: Math.min(...prices),
-        high: Math.max(...prices),
-        price: prices.reduce((a, b) => a + b, 0) / prices.length,
+        low,
+        high,
+        price: bucket.prices.reduce((a, b) => a + b, 0) / bucket.prices.length,
       }
     })
 }
 
 export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProps) {
   const [rangeIdx, setRangeIdx] = useState(0)
-  const [granIdx, setGranIdx] = useState(2) // default 15m
+  const currentDays = TIME_RANGES[rangeIdx].days
+  const granConfig = RANGE_GRAN_CONFIG[currentDays] || RANGE_GRAN_CONFIG[7]
+  const [granSelIdx, setGranSelIdx] = useState(granConfig.defaultIdx)
+
+  // Auto-select default granularity when range changes
+  useEffect(() => {
+    const cfg = RANGE_GRAN_CONFIG[currentDays] || RANGE_GRAN_CONFIG[7]
+    setGranSelIdx(cfg.defaultIdx)
+  }, [currentDays])
+
+  const activeGranMinutes = ALL_GRANULARITIES[granConfig.available[granSelIdx] ?? granConfig.available[0]].minutes
 
   const data = useMemo(
-    () => aggregateHistory(history, GRANULARITIES[granIdx].minutes),
-    [history, granIdx]
+    () => aggregateHistory(history, activeGranMinutes),
+    [history, activeGranMinutes]
   )
 
   if (isLoading) {
@@ -95,7 +126,7 @@ export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProp
 
   return (
     <div>
-      <div className="flex items-center gap-4 mb-4">
+      <div className="flex items-center gap-4 mb-4 flex-wrap">
         <div className="flex gap-1">
           {TIME_RANGES.map((r, i) => (
             <Button
@@ -110,14 +141,14 @@ export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProp
         </div>
         <span className="text-xs text-muted-foreground">Granularity:</span>
         <div className="flex gap-1">
-          {GRANULARITIES.map((g, i) => (
+          {granConfig.available.map((gIdx, i) => (
             <Button
-              key={g.label}
-              variant={granIdx === i ? 'default' : 'outline'}
+              key={ALL_GRANULARITIES[gIdx].label}
+              variant={granSelIdx === i ? 'default' : 'outline'}
               size="sm"
-              onClick={() => setGranIdx(i)}
+              onClick={() => setGranSelIdx(i)}
             >
-              {g.label}
+              {ALL_GRANULARITIES[gIdx].label}
             </Button>
           ))}
         </div>

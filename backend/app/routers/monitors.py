@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.database import Monitor, PriceHistory, get_db
+from app.database import Monitor, PriceHistory, PriceHistoryDaily, PriceHistoryHourly, get_db
 from app.models import (
     HealthResponse,
     MonitorCreate,
@@ -17,6 +17,7 @@ from app.models import (
 from app.scheduler import is_scheduler_running
 from app.services.monitor_service import check_single_monitor
 from app.services.sns_service import send_test_notification
+from bs4 import BeautifulSoup
 from app.scrapers.ebay import EbayScraper
 from app.scrapers.manapool import ManapoolScraper
 from app.scrapers.tcgplayer import TCGPlayerScraper
@@ -116,24 +117,80 @@ def toggle_alerts(monitor_id: int, db: Session = Depends(get_db)):
 )
 def get_price_history(
     monitor_id: int,
-    days: int = Query(default=7, ge=1, le=365),
+    days: int = Query(default=7, ge=1, le=1825),
     db: Session = Depends(get_db),
 ):
     monitor = db.query(Monitor).filter(Monitor.id == monitor_id).first()
     if not monitor:
         raise HTTPException(status_code=404, detail="Monitor not found")
 
-    since = datetime.utcnow() - timedelta(days=days)
-    history = (
+    now = datetime.utcnow()
+    since = now - timedelta(days=days)
+    results: list[PriceHistoryResponse] = []
+
+    # Always include raw data (covers last 30 days before downsampling purges it)
+    raw_since = max(since, now - timedelta(days=30))
+    raw_rows = (
         db.query(PriceHistory)
         .filter(
             PriceHistory.monitor_id == monitor_id,
-            PriceHistory.checked_at >= since,
+            PriceHistory.checked_at >= raw_since,
         )
         .order_by(PriceHistory.checked_at.asc())
         .all()
     )
-    return history
+    for r in raw_rows:
+        results.append(PriceHistoryResponse(
+            id=r.id, monitor_id=r.monitor_id, price=r.price,
+            low=None, high=None, available=r.available,
+            source_detail=r.source_detail, checked_at=r.checked_at,
+        ))
+
+    # For ranges > 30 days, include hourly rollups
+    if days > 30:
+        hourly_since = since
+        hourly_before = now - timedelta(days=30)
+        hourly_rows = (
+            db.query(PriceHistoryHourly)
+            .filter(
+                PriceHistoryHourly.monitor_id == monitor_id,
+                PriceHistoryHourly.hour >= hourly_since,
+                PriceHistoryHourly.hour < hourly_before,
+            )
+            .order_by(PriceHistoryHourly.hour.asc())
+            .all()
+        )
+        for h in hourly_rows:
+            results.append(PriceHistoryResponse(
+                id=h.id, monitor_id=h.monitor_id, price=h.avg,
+                low=h.low, high=h.high, available=True,
+                source_detail=None, checked_at=h.hour,
+            ))
+
+    # For ranges > 365 days, include daily rollups
+    if days > 365:
+        daily_since = since
+        daily_before = now - timedelta(days=365)
+        daily_rows = (
+            db.query(PriceHistoryDaily)
+            .filter(
+                PriceHistoryDaily.monitor_id == monitor_id,
+                PriceHistoryDaily.day >= daily_since,
+                PriceHistoryDaily.day < daily_before,
+            )
+            .order_by(PriceHistoryDaily.day.asc())
+            .all()
+        )
+        for d in daily_rows:
+            results.append(PriceHistoryResponse(
+                id=d.id, monitor_id=d.monitor_id, price=d.avg,
+                low=d.low, high=d.high, available=True,
+                source_detail=None, checked_at=d.day,
+            ))
+
+    # Sort all results by timestamp
+    results.sort(key=lambda r: r.checked_at or datetime.min)
+    return results
 
 
 @router.post("/test-sns")
@@ -183,7 +240,6 @@ async def debug_scrape(source: str = Query(...), url: str = Query(...)):
         resp["page_html_length"] = len(EbayScraper.last_page_html)
         # Show first li child of ul.srp-results for structure debugging
         if not result.listings and EbayScraper.last_page_html:
-            from bs4 import BeautifulSoup
             dbg_soup = BeautifulSoup(EbayScraper.last_page_html, "lxml")
             results_ul = dbg_soup.select_one("ul.srp-results")
             if results_ul:

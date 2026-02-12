@@ -41,6 +41,8 @@ export interface PriceHistory {
   id: number
   monitor_id: number
   price: number | null
+  low?: number | null
+  high?: number | null
   available: boolean
   source_detail: string | null
   checked_at: string | null

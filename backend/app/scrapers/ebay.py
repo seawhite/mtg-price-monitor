@@ -5,18 +5,10 @@ from urllib.parse import quote_plus, parse_qs, urlparse
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
-from app.scrapers.base import BaseScraper, ListingInfo, ScrapeResult
+from app.scrapers.base import BaseScraper, DEFAULT_USER_AGENT, ListingInfo, ScrapeResult, parse_price
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
-
-def parse_price(text: str) -> float | None:
-    match = re.search(r"\$?([\d,]+\.?\d*)", text)
-    if match:
-        return float(match.group(1).replace(",", ""))
-    return None
 
 
 def _normalize(text: str) -> str:
@@ -91,7 +83,7 @@ class EbayScraper(BaseScraper):
                     ],
                 )
                 context = await browser.new_context(
-                    user_agent=USER_AGENT,
+                    user_agent=DEFAULT_USER_AGENT,
                     viewport={"width": 1920, "height": 1080},
                     locale="en-US",
                 )

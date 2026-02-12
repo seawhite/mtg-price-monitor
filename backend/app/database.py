@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -61,6 +62,42 @@ class PriceHistory(Base):
     checked_at = Column(DateTime, default=datetime.utcnow)
 
     monitor = relationship("Monitor", back_populates="price_history")
+
+    __table_args__ = (
+        Index("ix_ph_monitor_checked", "monitor_id", "checked_at"),
+    )
+
+
+class PriceHistoryHourly(Base):
+    __tablename__ = "price_history_hourly"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    monitor_id = Column(Integer, ForeignKey("monitors.id"), nullable=False)
+    hour = Column(DateTime, nullable=False)
+    low = Column(Float, nullable=True)
+    high = Column(Float, nullable=True)
+    avg = Column(Float, nullable=True)
+    count = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index("ix_ph_hourly_monitor_hour", "monitor_id", "hour"),
+    )
+
+
+class PriceHistoryDaily(Base):
+    __tablename__ = "price_history_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    monitor_id = Column(Integer, ForeignKey("monitors.id"), nullable=False)
+    day = Column(DateTime, nullable=False)
+    low = Column(Float, nullable=True)
+    high = Column(Float, nullable=True)
+    avg = Column(Float, nullable=True)
+    count = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index("ix_ph_daily_monitor_day", "monitor_id", "day"),
+    )
 
 
 def init_db():

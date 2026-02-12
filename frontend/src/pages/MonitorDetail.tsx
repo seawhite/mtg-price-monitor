@@ -53,7 +53,7 @@ export function MonitorDetail() {
     const interval = setInterval(() => {
       fetchMonitor()
       fetchHistory()
-    }, 15000)
+    }, 60000)
     return () => clearInterval(interval)
   }, [fetchMonitor, fetchHistory])
 
@@ -220,7 +220,9 @@ export function MonitorDetail() {
 
       {/* Recent Checks — Hourly High/Low */}
       <div className="rounded-lg border bg-card p-6">
-        <h2 className="text-lg font-semibold mb-4">Recent Checks (Hourly)</h2>
+        <h2 className="text-lg font-semibold mb-4">
+          {historyDays <= 30 ? 'Recent Checks (Hourly)' : historyDays <= 365 ? 'Price Summary (Daily)' : 'Price Summary (Weekly)'}
+        </h2>
         {history.length === 0 ? (
           <p className="text-muted-foreground text-sm">No checks recorded yet.</p>
         ) : (

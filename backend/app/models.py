@@ -50,7 +50,9 @@ class PriceHistoryResponse(BaseModel):
     id: int
     monitor_id: int
     price: Optional[float] = None
-    available: bool
+    low: Optional[float] = None
+    high: Optional[float] = None
+    available: bool = True
     source_detail: Optional[str] = None
     checked_at: Optional[datetime] = None
 

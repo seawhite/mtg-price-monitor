@@ -3,22 +3,10 @@ import re
 
 from playwright.async_api import async_playwright
 
-from app.scrapers.base import BaseScraper, ListingInfo, ScrapeResult
+from app.scrapers.base import BaseScraper, DEFAULT_USER_AGENT, ListingInfo, ScrapeResult, parse_price
 
 logger = logging.getLogger(__name__)
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-]
-
-
-def parse_price(text: str) -> float | None:
-    match = re.search(r"\$?([\d,]+\.?\d*)", text)
-    if match:
-        return float(match.group(1).replace(",", ""))
-    return None
 
 
 class TCGPlayerScraper(BaseScraper):
@@ -30,7 +18,7 @@ class TCGPlayerScraper(BaseScraper):
                     args=["--no-sandbox", "--disable-setuid-sandbox"],
                 )
                 context = await browser.new_context(
-                    user_agent=USER_AGENTS[0],
+                    user_agent=DEFAULT_USER_AGENT,
                     viewport={"width": 1920, "height": 1080},
                 )
                 page = await context.new_page()
