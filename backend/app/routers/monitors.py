@@ -181,4 +181,14 @@ async def debug_scrape(source: str = Query(...), url: str = Query(...)):
     if source == "ebay":
         resp["page_text_snippet"] = EbayScraper.last_page_text[:2000]
         resp["page_html_length"] = len(EbayScraper.last_page_html)
+        # Show first li child of ul.srp-results for structure debugging
+        if not result.listings and EbayScraper.last_page_html:
+            from bs4 import BeautifulSoup
+            dbg_soup = BeautifulSoup(EbayScraper.last_page_html, "lxml")
+            results_ul = dbg_soup.select_one("ul.srp-results")
+            if results_ul:
+                children = results_ul.find_all("li", recursive=False)
+                resp["srp_li_count"] = len(children)
+                if children:
+                    resp["first_li_html"] = str(children[0])[:3000]
     return resp

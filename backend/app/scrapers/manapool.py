@@ -8,13 +8,32 @@ from app.scrapers.base import BaseScraper, ListingInfo, ScrapeResult
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 
 def parse_price(text: str) -> float | None:
     match = re.search(r"\$?([\d,]+\.?\d*)", text)
     if match:
         return float(match.group(1).replace(",", ""))
+    return None
+
+
+def _find_price_in_dict(d: dict) -> float | None:
+    """Recursively search a dict for price-like numeric values."""
+    price_keys = ["price", "total_price", "unit_price", "amount", "cost",
+                  "listing_price", "sale_price", "card_price"]
+    for k, v in d.items():
+        if any(pk in k.lower() for pk in ["price", "cost", "amount"]):
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v)
+            elif isinstance(v, str):
+                p = parse_price(v)
+                if p and p > 0:
+                    return p
+        if isinstance(v, dict):
+            result = _find_price_in_dict(v)
+            if result:
+                return result
     return None
 
 
@@ -44,12 +63,16 @@ class ManapoolScraper(BaseScraper):
                             "listing" in resp_url.lower()
                             or "for-sale" in resp_url.lower()
                             or "inventory" in resp_url.lower()
-                            or "/api/" in resp_url.lower()
+                            or "products" in resp_url.lower()
+                            or "sb-api" in resp_url.lower()
                         ):
                             ct = response.headers.get("content-type", "")
                             if "json" in ct:
                                 body = await response.json()
-                                logger.info(f"Manapool API: {resp_url[:120]} -> keys={list(body.keys()) if isinstance(body, dict) else type(body).__name__}")
+                                if isinstance(body, list) and body:
+                                    logger.info(f"Manapool API: {resp_url[:120]} -> list[{len(body)}], first_item_keys={list(body[0].keys()) if isinstance(body[0], dict) else 'N/A'}")
+                                elif isinstance(body, dict):
+                                    logger.info(f"Manapool API: {resp_url[:120]} -> keys={list(body.keys())}")
                                 api_responses.append({"url": resp_url, "data": body})
                     except Exception:
                         pass
@@ -65,37 +88,33 @@ class ManapoolScraper(BaseScraper):
                 available = False
 
                 # Strategy 1: Parse intercepted API responses for listings
+                # Manapool uses Supabase (sb-api.manapool.com) which returns lists of items
                 for resp in api_responses:
                     data = resp["data"]
                     items = []
                     if isinstance(data, list):
                         items = data
                     elif isinstance(data, dict):
-                        # Look for common API patterns
                         for key in ["results", "listings", "data", "items", "for_sale", "inventory"]:
                             if key in data and isinstance(data[key], list):
                                 items = data[key]
                                 break
+
                     for item in items:
                         if not isinstance(item, dict):
                             continue
-                        item_price = None
-                        for pk in ["price", "total_price", "unit_price", "amount", "cost"]:
-                            if pk in item:
-                                try:
-                                    val = item[pk]
-                                    if isinstance(val, (int, float)):
-                                        item_price = float(val)
-                                    elif isinstance(val, str):
-                                        item_price = parse_price(val)
-                                    if item_price and item_price > 0:
-                                        break
-                                except Exception:
-                                    pass
+                        # Recursively search for price in nested dict (Supabase joins)
+                        item_price = _find_price_in_dict(item)
                         if item_price and item_price > 0:
-                            seller = item.get("seller_name", item.get("seller", item.get("shop_name", "Seller")))
-                            condition = item.get("condition", item.get("card_condition", ""))
-                            title = f"{seller} - {condition}".strip(" -") if seller else "Manapool Listing"
+                            # Extract seller/condition info from any level
+                            seller = (item.get("seller_name") or item.get("seller")
+                                      or item.get("shop_name") or "")
+                            condition = ""
+                            cond_id = item.get("condition_id", "")
+                            if cond_id:
+                                cond_map = {"1": "NM", "2": "LP", "3": "MP", "4": "HP", "5": "DMG"}
+                                condition = cond_map.get(str(cond_id), str(cond_id))
+                            title = f"{seller} - {condition}".strip(" -") if seller else f"Manapool Listing ({condition})" if condition else "Manapool Listing"
                             listings.append(
                                 ListingInfo(
                                     title=title,
@@ -104,68 +123,28 @@ class ManapoolScraper(BaseScraper):
                                 )
                             )
 
-                # Strategy 2: Scrape visible DOM for listing rows if API interception missed
+                # Strategy 2: Scrape visible DOM for dollar amounts
                 if not listings:
                     logger.info("Manapool: No listings from API, scraping DOM")
-                    # Dump the full body text for debugging
                     try:
                         body_text = await page.text_content("body") or ""
-                        # Find all dollar amounts
+                        # Find all dollar amounts on the page
                         dollar_matches = re.findall(r"\$(\d+\.\d{2})", body_text)
-                        logger.info(f"Manapool: Found {len(dollar_matches)} dollar amounts in page: {dollar_matches[:20]}")
+                        logger.info(f"Manapool: Found {len(dollar_matches)} dollar amounts: {dollar_matches[:20]}")
 
-                        # Try to find listing containers - look for elements that have both
-                        # a price and an "Add to Cart" or similar action
-                        # Try various selectors for listing rows
-                        row_selectors = [
-                            "[class*='listing']",
-                            "[class*='Listing']",
-                            "[class*='for-sale'] > div",
-                            "[class*='ForSale'] > div",
-                            "[class*='seller']",
-                            "[class*='Seller']",
-                            "table tbody tr",
-                            "[class*='row']",
-                            "[class*='inventory']",
-                            "[class*='card-item']",
-                        ]
-
-                        for selector in row_selectors:
-                            try:
-                                rows = await page.query_selector_all(selector)
-                                if rows:
-                                    logger.info(f"Manapool: selector '{selector}' found {len(rows)} elements")
-                                for row in rows:
-                                    text = await row.text_content() or ""
-                                    row_price = parse_price(text)
-                                    if row_price and row_price > 0.5:
-                                        listings.append(
-                                            ListingInfo(
-                                                title="Manapool Listing",
-                                                price=row_price,
-                                                link=url,
-                                            )
-                                        )
-                            except Exception:
-                                continue
-                            if listings:
-                                break
-
+                        # Use all dollar amounts as potential listings (threshold $0.01)
+                        for dm in dollar_matches:
+                            p = float(dm)
+                            if p >= 0.01:
+                                listings.append(
+                                    ListingInfo(
+                                        title="Manapool Listing",
+                                        price=p,
+                                        link=url,
+                                    )
+                                )
                     except Exception as e:
                         logger.warning(f"Manapool: DOM scrape error: {e}")
-
-                # Strategy 3: Fallback to all dollar amounts on page
-                if not listings:
-                    try:
-                        body_text = await page.text_content("body") or ""
-                        all_prices = re.findall(r"\$(\d+\.\d{2})", body_text)
-                        valid_prices = [float(p) for p in all_prices if float(p) > 0.5]
-                        for vp in valid_prices:
-                            listings.append(
-                                ListingInfo(title="Manapool Listing", price=vp, link=url)
-                            )
-                    except Exception:
-                        pass
 
                 # Deduplicate listings by price
                 seen_prices = set()

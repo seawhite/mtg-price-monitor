@@ -84,66 +84,92 @@ class EbayScraper(BaseScraper):
 
                 await browser.close()
 
-            # Parse the HTML with BeautifulSoup instead of Playwright DOM queries
+            # Parse the HTML with BeautifulSoup
             soup = BeautifulSoup(html, "lxml")
 
             listings = []
             seen_ids = set()
 
+            # Strategy 1: Try legacy .s-item selector
             items = soup.select(".s-item")
-            logger.info(f"eBay: BeautifulSoup found {len(items)} .s-item elements")
+            logger.info(f"eBay: .s-item found {len(items)} elements")
+
+            # Strategy 2: If no .s-item, find <li> children of ul.srp-results
+            if not items:
+                results_ul = soup.select_one("ul.srp-results")
+                if results_ul:
+                    items = results_ul.find_all("li", recursive=False)
+                    logger.info(f"eBay: ul.srp-results > li found {len(items)} elements")
+                    if items:
+                        # Log the classes of first few items for debugging
+                        for i, it in enumerate(items[:3]):
+                            logger.info(f"eBay: li[{i}] classes={it.get('class', [])}, id={it.get('id', '')}")
 
             for item in items:
                 try:
-                    # Skip the "Shop on eBay" placeholder
-                    title_el = item.select_one(".s-item__title")
-                    if not title_el:
-                        continue
-                    title = title_el.get_text(strip=True)
-                    if title.lower().startswith("shop on ebay"):
+                    # Find the item link to /itm/ (most reliable anchor)
+                    link = ""
+                    listing_id = ""
+                    for a_tag in item.find_all("a", href=True):
+                        href = a_tag["href"]
+                        id_match = re.search(r"/itm/(\d+)", href)
+                        if id_match:
+                            link = href
+                            listing_id = id_match.group(1)
+                            break
+
+                    if not listing_id:
                         continue
 
-                    # Price
-                    price_el = item.select_one(".s-item__price")
-                    if not price_el:
+                    # Extract title: try known selectors, then fall back to link text
+                    title = ""
+                    for title_sel in [".s-item__title", "[class*='title']", "h3", "span[role='heading']"]:
+                        title_el = item.select_one(title_sel)
+                        if title_el:
+                            title = title_el.get_text(strip=True)
+                            break
+                    if not title:
+                        # Use the text of the link that points to /itm/
+                        for a_tag in item.find_all("a", href=True):
+                            if f"/itm/{listing_id}" in a_tag["href"]:
+                                title = a_tag.get_text(strip=True)
+                                if title:
+                                    break
+                    if not title or title.lower().startswith("shop on ebay"):
                         continue
-                    price_text = price_el.get_text(strip=True)
 
-                    # Skip price ranges
-                    if " to " in price_text:
-                        continue
+                    # Extract price: try known selectors, then search all text
+                    price = None
+                    for price_sel in [".s-item__price", "[class*='price']", "span.BOLD"]:
+                        price_el = item.select_one(price_sel)
+                        if price_el:
+                            price_text = price_el.get_text(strip=True)
+                            if " to " in price_text:
+                                continue
+                            price = parse_price(price_text)
+                            if price and price > 0:
+                                break
 
-                    price = parse_price(price_text)
+                    # Fallback: find any $X.XX pattern in item text
+                    if not price:
+                        item_text = item.get_text()
+                        price_matches = re.findall(r"\$(\d+[\.,]\d{2})", item_text)
+                        if price_matches:
+                            price = float(price_matches[0].replace(",", ""))
+
                     if not price or price <= 0:
                         continue
 
-                    # Link
-                    link_el = item.select_one(".s-item__link")
-                    link = link_el["href"] if link_el and link_el.has_attr("href") else ""
-
-                    # Extract listing ID
-                    listing_id = ""
-                    id_match = re.search(r"/itm/(\d+)", link)
-                    if id_match:
-                        listing_id = id_match.group(1)
-
                     # Skip sponsored
-                    sponsored = item.select_one(".s-item__ad-badge, [class*='SPONSORED']")
-                    if sponsored:
+                    item_classes = " ".join(item.get("class", []))
+                    item_html_str = str(item)
+                    if "SPONSORED" in item_html_str or "ad-badge" in item_html_str:
                         continue
-
-                    # Skip non-US items
-                    loc_el = item.select_one(".s-item__location, .s-item__itemLocation")
-                    if loc_el:
-                        loc_text = loc_el.get_text(strip=True).lower()
-                        if loc_text and "united states" not in loc_text and "us" not in loc_text.split():
-                            continue
 
                     # Deduplicate
-                    if listing_id and listing_id in seen_ids:
+                    if listing_id in seen_ids:
                         continue
-                    if listing_id:
-                        seen_ids.add(listing_id)
+                    seen_ids.add(listing_id)
 
                     listings.append(
                         ListingInfo(
@@ -157,17 +183,14 @@ class EbayScraper(BaseScraper):
                     logger.debug(f"eBay: Error parsing item: {e}")
                     continue
 
-            # If no .s-item found, log what selectors DO exist for debugging
+            # If still nothing, log diagnostic info
             if not listings:
-                # Check what major containers exist
-                for sel in ["#srp-river-results", ".srp-results", ".b-list__items_nofooter",
-                            "[class*='srp']", "[class*='item']", "ul.srp-results"]:
-                    found = soup.select(sel)
-                    if found:
-                        logger.info(f"eBay: Found {len(found)} elements for '{sel}'")
-                # Log first few class names from top-level divs
-                top_divs = soup.select("body > div")
-                logger.info(f"eBay: {len(top_divs)} top-level divs. Classes: {[d.get('class', []) for d in top_divs[:5]]}")
+                results_ul = soup.select_one("ul.srp-results")
+                if results_ul:
+                    children = results_ul.find_all("li", recursive=False)
+                    logger.warning(f"eBay: {len(children)} <li> in ul.srp-results but 0 parsed. First child HTML (500 chars): {str(children[0])[:500] if children else 'NONE'}")
+                else:
+                    logger.warning("eBay: No ul.srp-results found at all")
 
             lowest_price = min((l.price for l in listings), default=None)
             available = len(listings) > 0
