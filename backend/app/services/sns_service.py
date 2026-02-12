@@ -73,3 +73,21 @@ def send_alert(
     except Exception as e:
         logger.error(f"SNS service error: {e}")
         return False
+
+
+def send_test_notification() -> bool:
+    try:
+        client = get_sns_client()
+        client.publish(
+            TopicArn=settings.sns_topic_arn,
+            Subject="[MTG Monitor] Test Notification",
+            Message="This is a test notification from your MTG Price Monitor.",
+        )
+        logger.info("SNS test notification sent successfully")
+        return True
+    except ClientError as e:
+        logger.error(f"Failed to send SNS test notification: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"SNS test notification error: {e}")
+        return False

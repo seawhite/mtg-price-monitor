@@ -16,6 +16,7 @@ from app.models import (
 )
 from app.scheduler import is_scheduler_running
 from app.services.monitor_service import check_single_monitor
+from app.services.sns_service import send_test_notification
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,6 +51,8 @@ def create_monitor(data: MonitorCreate, db: Session = Depends(get_db)):
         url=data.url,
         min_price=data.min_price,
         max_price=data.max_price,
+        track_min_price=data.track_min_price,
+        track_max_price=data.track_max_price,
         alerts_enabled=data.alerts_enabled,
     )
     db.add(monitor)
@@ -128,6 +131,14 @@ def get_price_history(
         .all()
     )
     return history
+
+
+@router.post("/test-sns")
+def test_sns():
+    success = send_test_notification()
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to send SNS test notification")
+    return {"success": True}
 
 
 @router.post("/monitors/{monitor_id}/check-now")

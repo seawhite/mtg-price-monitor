@@ -5,6 +5,8 @@ export interface Monitor {
   url: string
   min_price: number | null
   max_price: number | null
+  track_min_price: number | null
+  track_max_price: number | null
   alerts_enabled: boolean
   last_checked_at: string | null
   last_price: number | null
@@ -20,6 +22,8 @@ export interface MonitorCreate {
   url: string
   min_price: number | null
   max_price: number | null
+  track_min_price: number | null
+  track_max_price: number | null
   alerts_enabled: boolean
 }
 
@@ -28,6 +32,8 @@ export interface MonitorUpdate {
   url?: string
   min_price?: number | null
   max_price?: number | null
+  track_min_price?: number | null
+  track_max_price?: number | null
   alerts_enabled?: boolean
 }
 

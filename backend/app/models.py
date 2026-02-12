@@ -10,6 +10,8 @@ class MonitorCreate(BaseModel):
     url: str
     min_price: Optional[float] = None
     max_price: Optional[float] = None
+    track_min_price: Optional[float] = None
+    track_max_price: Optional[float] = None
     alerts_enabled: bool = True
 
 
@@ -18,6 +20,8 @@ class MonitorUpdate(BaseModel):
     url: Optional[str] = None
     min_price: Optional[float] = None
     max_price: Optional[float] = None
+    track_min_price: Optional[float] = None
+    track_max_price: Optional[float] = None
     alerts_enabled: Optional[bool] = None
 
 
@@ -28,6 +32,8 @@ class MonitorResponse(BaseModel):
     url: str
     min_price: Optional[float] = None
     max_price: Optional[float] = None
+    track_min_price: Optional[float] = None
+    track_max_price: Optional[float] = None
     alerts_enabled: bool
     last_checked_at: Optional[datetime] = None
     last_price: Optional[float] = None

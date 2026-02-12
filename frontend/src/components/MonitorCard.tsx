@@ -1,13 +1,17 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ExternalLink, RefreshCw, ShoppingCart, Store, Globe } from 'lucide-react'
-import type { Monitor } from '../types'
+import { ExternalLink, RefreshCw, ShoppingCart, Store, Globe, BarChart3 } from 'lucide-react'
+import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts'
+import type { Monitor, PriceHistory } from '../types'
 import { formatCurrency, formatDate, sourceLabel } from '../lib/utils'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Switch } from './ui/switch'
+import { PriceBreakdownDialog } from './PriceBreakdownDialog'
 
 interface MonitorCardProps {
   monitor: Monitor
+  priceHistory?: PriceHistory[]
   onToggleAlerts: (id: number) => void
   onCheckNow: (id: number) => void
   onDelete: (id: number) => void
@@ -40,15 +44,35 @@ function StatusBadge({ status }: { status: string | null }) {
   }
 }
 
-export function MonitorCard({ monitor, onToggleAlerts, onCheckNow, onDelete }: MonitorCardProps) {
+export function MonitorCard({ monitor, priceHistory = [], onToggleAlerts, onCheckNow, onDelete }: MonitorCardProps) {
   const navigate = useNavigate()
+  const [breakdownOpen, setBreakdownOpen] = useState(false)
 
-  const priceRange = [
+  const alertRange = [
     monitor.min_price != null ? `$${monitor.min_price.toFixed(2)}` : null,
     monitor.max_price != null ? `$${monitor.max_price.toFixed(2)}` : null,
   ]
     .filter(Boolean)
     .join(' - ')
+
+  const trackRange = [
+    monitor.track_min_price != null ? `$${monitor.track_min_price.toFixed(2)}` : null,
+    monitor.track_max_price != null ? `$${monitor.track_max_price.toFixed(2)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' - ')
+
+  const sparkData = priceHistory
+    .filter((h) => h.price !== null)
+    .map((h) => ({
+      time: new Date(h.checked_at!).toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }),
+      price: h.price,
+    }))
 
   return (
     <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-5 hover:shadow-md transition-shadow">
@@ -63,7 +87,7 @@ export function MonitorCard({ monitor, onToggleAlerts, onCheckNow, onDelete }: M
         <StatusBadge status={monitor.last_status} />
       </div>
 
-      <div className="space-y-2 text-sm text-muted-foreground mb-4">
+      <div className="space-y-2 text-sm text-muted-foreground mb-3">
         <div className="flex justify-between">
           <span>Source</span>
           <span className="font-medium text-foreground">{sourceLabel(monitor.source)}</span>
@@ -72,16 +96,78 @@ export function MonitorCard({ monitor, onToggleAlerts, onCheckNow, onDelete }: M
           <span>Last Price</span>
           <span className="font-medium text-foreground">{formatCurrency(monitor.last_price)}</span>
         </div>
-        {priceRange && (
+        {trackRange && (
           <div className="flex justify-between">
-            <span>Target Range</span>
-            <span className="font-medium text-foreground">{priceRange}</span>
+            <span>Track Range</span>
+            <span className="font-medium text-foreground">{trackRange}</span>
+          </div>
+        )}
+        {alertRange && (
+          <div className="flex justify-between">
+            <span>Alert Range</span>
+            <span className="font-medium text-foreground">{alertRange}</span>
           </div>
         )}
         <div className="flex justify-between">
           <span>Last Checked</span>
           <span className="font-medium text-foreground">{formatDate(monitor.last_checked_at)}</span>
         </div>
+      </div>
+
+      {/* Sparkline */}
+      <div className="mb-3 border-t pt-3">
+        {sparkData.length > 1 ? (
+          <div className="flex items-center gap-1">
+            <div className="flex-1">
+              <ResponsiveContainer width="100%" height={60}>
+                <LineChart data={sparkData}>
+                  <Tooltip
+                    formatter={(value: number) => [`$${value.toFixed(2)}`, 'Price']}
+                    labelStyle={{ color: 'hsl(var(--foreground))' }}
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      border: '1px solid hsl(var(--border))',
+                      borderRadius: '0.375rem',
+                      fontSize: '0.75rem',
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="price"
+                    stroke="hsl(var(--primary))"
+                    strokeWidth={1.5}
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => setBreakdownOpen(true)}
+              title="Price breakdown"
+            >
+              <BarChart3 className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">No chart data yet</p>
+            {priceHistory.length > 0 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => setBreakdownOpen(true)}
+                title="Price breakdown"
+              >
+                <BarChart3 className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between pt-3 border-t">
@@ -122,6 +208,13 @@ export function MonitorCard({ monitor, onToggleAlerts, onCheckNow, onDelete }: M
           </Button>
         </div>
       </div>
+
+      <PriceBreakdownDialog
+        open={breakdownOpen}
+        onOpenChange={setBreakdownOpen}
+        monitorName={monitor.name}
+        history={priceHistory}
+      />
     </div>
   )
 }

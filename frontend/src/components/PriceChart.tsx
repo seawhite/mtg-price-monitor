@@ -14,6 +14,7 @@ import { Button } from './ui/button'
 interface PriceChartProps {
   history: PriceHistory[]
   isLoading?: boolean
+  onRangeChange?: (days: number) => void
 }
 
 const TIME_RANGES = [
@@ -22,7 +23,7 @@ const TIME_RANGES = [
   { label: 'All', days: 365 },
 ]
 
-export function PriceChart({ history, isLoading }: PriceChartProps) {
+export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProps) {
   const [rangeIdx, setRangeIdx] = useState(0)
 
   if (isLoading) {
@@ -62,7 +63,7 @@ export function PriceChart({ history, isLoading }: PriceChartProps) {
             key={r.label}
             variant={rangeIdx === i ? 'default' : 'outline'}
             size="sm"
-            onClick={() => setRangeIdx(i)}
+            onClick={() => { setRangeIdx(i); onRangeChange?.(r.days) }}
           >
             {r.label}
           </Button>

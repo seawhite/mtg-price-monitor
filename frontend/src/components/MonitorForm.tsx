@@ -32,6 +32,8 @@ export function MonitorForm({ open, onOpenChange, onSubmit, initialData, isEdit 
   const [url, setUrl] = useState(initialData?.url || '')
   const [minPrice, setMinPrice] = useState(initialData?.min_price?.toString() || '')
   const [maxPrice, setMaxPrice] = useState(initialData?.max_price?.toString() || '')
+  const [trackMinPrice, setTrackMinPrice] = useState(initialData?.track_min_price?.toString() || '')
+  const [trackMaxPrice, setTrackMaxPrice] = useState(initialData?.track_max_price?.toString() || '')
   const [alertsEnabled, setAlertsEnabled] = useState(initialData?.alerts_enabled ?? true)
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -42,6 +44,8 @@ export function MonitorForm({ open, onOpenChange, onSubmit, initialData, isEdit 
       url,
       min_price: minPrice ? parseFloat(minPrice) : null,
       max_price: maxPrice ? parseFloat(maxPrice) : null,
+      track_min_price: trackMinPrice ? parseFloat(trackMinPrice) : null,
+      track_max_price: trackMaxPrice ? parseFloat(trackMaxPrice) : null,
       alerts_enabled: alertsEnabled,
     })
     if (!isEdit) {
@@ -49,6 +53,8 @@ export function MonitorForm({ open, onOpenChange, onSubmit, initialData, isEdit 
       setUrl('')
       setMinPrice('')
       setMaxPrice('')
+      setTrackMinPrice('')
+      setTrackMaxPrice('')
       setAlertsEnabled(true)
     }
   }
@@ -115,10 +121,35 @@ export function MonitorForm({ open, onOpenChange, onSubmit, initialData, isEdit 
             )}
           </div>
 
-          {/* Price Range */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm font-medium mb-1 block">Min Price ($)</label>
+          {/* Tracking Range */}
+          <div>
+            <label className="text-sm font-medium mb-1 block">Tracking Range ($)</label>
+            <p className="text-xs text-muted-foreground mb-2">Filter out irrelevant listings. Only prices in this range are recorded.</p>
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={trackMinPrice}
+                onChange={(e) => setTrackMinPrice(e.target.value)}
+                placeholder="50.00"
+              />
+              <Input
+                type="number"
+                step="0.01"
+                min="0"
+                value={trackMaxPrice}
+                onChange={(e) => setTrackMaxPrice(e.target.value)}
+                placeholder="2000.00"
+              />
+            </div>
+          </div>
+
+          {/* Alert Range */}
+          <div>
+            <label className="text-sm font-medium mb-1 block">Alert Range ($)</label>
+            <p className="text-xs text-muted-foreground mb-2">Get notified when a listing is in this price range.</p>
+            <div className="grid grid-cols-2 gap-3">
               <Input
                 type="number"
                 step="0.01"
@@ -127,9 +158,6 @@ export function MonitorForm({ open, onOpenChange, onSubmit, initialData, isEdit 
                 onChange={(e) => setMinPrice(e.target.value)}
                 placeholder="400.00"
               />
-            </div>
-            <div>
-              <label className="text-sm font-medium mb-1 block">Max Price ($)</label>
               <Input
                 type="number"
                 step="0.01"

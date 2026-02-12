@@ -30,6 +30,16 @@ def price_in_range(
     return True
 
 
+def price_in_track_range(
+    price: float, track_min: float | None, track_max: float | None
+) -> bool:
+    if track_min is not None and price < track_min:
+        return False
+    if track_max is not None and price > track_max:
+        return False
+    return True
+
+
 async def check_single_monitor(monitor_id: int) -> dict:
     db: Session = SessionLocal()
     try:
@@ -61,21 +71,40 @@ async def check_single_monitor(monitor_id: int) -> dict:
             return {"status": "error", "error": result.error}
 
         if result.available and result.price is not None:
-            monitor.last_price = result.price
-            monitor.last_status = "available"
+            # For sources with multiple listings (eBay), filter by tracking range
+            if result.listings:
+                tracked_listings = [
+                    l for l in result.listings
+                    if price_in_track_range(l.price, monitor.track_min_price, monitor.track_max_price)
+                ]
+                tracked_price = min((l.price for l in tracked_listings), default=None)
+            else:
+                # Single-product sources (TCGPlayer, Manapool)
+                if price_in_track_range(result.price, monitor.track_min_price, monitor.track_max_price):
+                    tracked_price = result.price
+                    tracked_listings = []
+                else:
+                    tracked_price = None
+                    tracked_listings = []
 
-            # Record main price in history
+            if tracked_price is not None:
+                monitor.last_price = tracked_price
+                monitor.last_status = "available"
+            else:
+                monitor.last_status = "available"
+
+            # Record main tracked price in history
             history = PriceHistory(
                 monitor_id=monitor.id,
-                price=result.price,
+                price=tracked_price,
                 available=True,
                 source_detail=None,
                 checked_at=now,
             )
             db.add(history)
 
-            # Check if price is in range and alerts are enabled
-            if price_in_range(result.price, monitor.min_price, monitor.max_price):
+            # Check if tracked price is in alert range
+            if tracked_price is not None and price_in_range(tracked_price, monitor.min_price, monitor.max_price):
                 if monitor.alerts_enabled and should_send_alert(monitor.last_alerted_at):
                     link = monitor.url
                     if monitor.source == "ebay" and not monitor.url.startswith("http"):
@@ -83,7 +112,7 @@ async def check_single_monitor(monitor_id: int) -> dict:
 
                     sent = send_alert(
                         card_name=monitor.name,
-                        price=result.price,
+                        price=tracked_price,
                         source=monitor.source.capitalize(),
                         link=link,
                         min_price=monitor.min_price,
@@ -92,22 +121,21 @@ async def check_single_monitor(monitor_id: int) -> dict:
                     if sent:
                         monitor.last_alerted_at = now
 
-            # For eBay, also check individual listings
-            if monitor.source == "ebay" and result.listings:
-                for listing in result.listings:
-                    if price_in_range(
-                        listing.price, monitor.min_price, monitor.max_price
-                    ):
-                        # Record each matching listing
-                        lh = PriceHistory(
-                            monitor_id=monitor.id,
-                            price=listing.price,
-                            available=True,
-                            source_detail=listing.title,
-                            checked_at=now,
-                        )
-                        db.add(lh)
+            # For eBay, record and alert on individual tracked listings
+            if monitor.source == "ebay" and tracked_listings:
+                for listing in tracked_listings:
+                    # Record all tracked listings in history
+                    lh = PriceHistory(
+                        monitor_id=monitor.id,
+                        price=listing.price,
+                        available=True,
+                        source_detail=listing.title,
+                        checked_at=now,
+                    )
+                    db.add(lh)
 
+                    # Alert only if listing is also in alert range
+                    if price_in_range(listing.price, monitor.min_price, monitor.max_price):
                         if (
                             monitor.alerts_enabled
                             and should_send_alert(monitor.last_alerted_at)

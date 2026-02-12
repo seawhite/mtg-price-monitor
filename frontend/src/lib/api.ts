@@ -45,4 +45,7 @@ export const api = {
 
   checkNow: (id: number) =>
     request<Record<string, unknown>>(`/monitors/${id}/check-now`, { method: 'POST' }),
+
+  testSns: () =>
+    request<{ success: boolean }>('/test-sns', { method: 'POST' }),
 }

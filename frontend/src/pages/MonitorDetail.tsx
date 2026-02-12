@@ -62,6 +62,8 @@ export function MonitorDetail() {
         url: data.url,
         min_price: data.min_price,
         max_price: data.max_price,
+        track_min_price: data.track_min_price,
+        track_max_price: data.track_max_price,
         alerts_enabled: data.alerts_enabled,
       }
       await api.updateMonitor(monitorId, update)
@@ -113,6 +115,13 @@ export function MonitorDetail() {
     .filter(Boolean)
     .join(' - ')
 
+  const trackRange = [
+    monitor.track_min_price != null ? `$${monitor.track_min_price.toFixed(2)}` : null,
+    monitor.track_max_price != null ? `$${monitor.track_max_price.toFixed(2)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' - ')
+
   return (
     <div>
       {/* Header */}
@@ -130,7 +139,7 @@ export function MonitorDetail() {
       </div>
 
       {/* Info Grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-8">
         <div className="rounded-lg border bg-card p-4">
           <p className="text-sm text-muted-foreground">Last Price</p>
           <p className="text-2xl font-bold">{formatCurrency(monitor.last_price)}</p>
@@ -148,12 +157,16 @@ export function MonitorDetail() {
           </div>
         </div>
         <div className="rounded-lg border bg-card p-4">
-          <p className="text-sm text-muted-foreground">Target Range</p>
-          <p className="text-lg font-semibold">{priceRange || 'Not set'}</p>
-        </div>
-        <div className="rounded-lg border bg-card p-4">
           <p className="text-sm text-muted-foreground">Last Checked</p>
           <p className="text-sm font-medium">{formatDate(monitor.last_checked_at)}</p>
+        </div>
+        <div className="rounded-lg border bg-card p-4">
+          <p className="text-sm text-muted-foreground">Track Range</p>
+          <p className="text-lg font-semibold">{trackRange || 'Not set'}</p>
+        </div>
+        <div className="rounded-lg border bg-card p-4">
+          <p className="text-sm text-muted-foreground">Alert Range</p>
+          <p className="text-lg font-semibold">{priceRange || 'Not set'}</p>
         </div>
       </div>
 
@@ -177,7 +190,7 @@ export function MonitorDetail() {
       {/* Price Chart */}
       <div className="rounded-lg border bg-card p-6 mb-8">
         <h2 className="text-lg font-semibold mb-4">Price History</h2>
-        <PriceChart history={history} isLoading={historyLoading} />
+        <PriceChart history={history} isLoading={historyLoading} onRangeChange={(days) => setHistoryDays(days)} />
       </div>
 
       {/* Recent Checks Table */}
@@ -231,6 +244,8 @@ export function MonitorDetail() {
             url: monitor.url,
             min_price: monitor.min_price,
             max_price: monitor.max_price,
+            track_min_price: monitor.track_min_price,
+            track_max_price: monitor.track_max_price,
             alerts_enabled: monitor.alerts_enabled,
           }}
           isEdit

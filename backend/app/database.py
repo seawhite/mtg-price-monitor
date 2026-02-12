@@ -35,6 +35,8 @@ class Monitor(Base):
     url = Column(Text, nullable=False)  # Full URL or eBay search term
     min_price = Column(Float, nullable=True)
     max_price = Column(Float, nullable=True)
+    track_min_price = Column(Float, nullable=True)
+    track_max_price = Column(Float, nullable=True)
     alerts_enabled = Column(Boolean, default=True)
     last_checked_at = Column(DateTime, nullable=True)
     last_price = Column(Float, nullable=True)
