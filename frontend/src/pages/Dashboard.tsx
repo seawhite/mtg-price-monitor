@@ -12,6 +12,8 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [formOpen, setFormOpen] = useState(false)
   const [snsStatus, setSnsStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
+  const [checkingId, setCheckingId] = useState<number | null>(null)
+  const [checkResultMsg, setCheckResultMsg] = useState('')
 
   const fetchMonitors = useCallback(async () => {
     try {
@@ -62,11 +64,21 @@ export function Dashboard() {
   }
 
   const handleCheckNow = async (id: number) => {
+    setCheckingId(id)
     try {
-      await api.checkNow(id)
-      setTimeout(fetchMonitors, 2000)
+      const result = await api.checkNow(id)
+      if (result.error) {
+        alert(`Check failed: ${result.error}`)
+      } else {
+        const price = result.price != null ? `$${Number(result.price).toFixed(2)}` : 'N/A'
+        setCheckResultMsg(`${result.status} — ${price}`)
+        setTimeout(() => setCheckResultMsg(''), 4000)
+      }
+      fetchMonitors()
     } catch (err) {
-      console.error('Failed to check now:', err)
+      alert(`Check failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setCheckingId(null)
     }
   }
 
@@ -119,6 +131,12 @@ export function Dashboard() {
           </Button>
         </div>
       </div>
+
+      {checkResultMsg && (
+        <div className="mb-4 p-3 rounded-lg border bg-green-900/20 border-green-700 text-green-400 text-sm">
+          Check complete: {checkResultMsg}
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center py-12 text-muted-foreground">Loading monitors...</div>

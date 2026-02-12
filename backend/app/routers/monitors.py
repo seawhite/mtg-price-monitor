@@ -17,6 +17,9 @@ from app.models import (
 from app.scheduler import is_scheduler_running
 from app.services.monitor_service import check_single_monitor
 from app.services.sns_service import send_test_notification
+from app.scrapers.ebay import EbayScraper
+from app.scrapers.manapool import ManapoolScraper
+from app.scrapers.tcgplayer import TCGPlayerScraper
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -149,3 +152,28 @@ async def check_now(monitor_id: int, db: Session = Depends(get_db)):
 
     result = await check_single_monitor(monitor_id)
     return result
+
+
+@router.post("/debug-scrape")
+async def debug_scrape(source: str = Query(...), url: str = Query(...)):
+    """Debug endpoint: run a scraper and return raw results."""
+    scrapers = {
+        "ebay": EbayScraper(),
+        "manapool": ManapoolScraper(),
+        "tcgplayer": TCGPlayerScraper(),
+    }
+    scraper = scrapers.get(source)
+    if not scraper:
+        raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
+
+    result = await scraper.scrape(url)
+    return {
+        "price": result.price,
+        "available": result.available,
+        "error": result.error,
+        "listings_count": len(result.listings),
+        "listings": [
+            {"title": l.title, "price": l.price, "link": l.link[:100]}
+            for l in result.listings[:20]
+        ],
+    }

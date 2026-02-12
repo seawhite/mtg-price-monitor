@@ -49,23 +49,51 @@ class EbayScraper(BaseScraper):
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-infobars",
+                    ],
                 )
                 context = await browser.new_context(
                     user_agent=USER_AGENT,
                     viewport={"width": 1920, "height": 1080},
+                    locale="en-US",
                 )
                 page = await context.new_page()
 
+                # Hide webdriver flag
+                await page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                """)
+
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                 # Wait for search results to render
-                await page.wait_for_timeout(3000)
+                try:
+                    await page.wait_for_selector(".s-item", timeout=10000)
+                except Exception:
+                    logger.warning("eBay: Timed out waiting for .s-item selector")
+                await page.wait_for_timeout(2000)
+
+                # Debug: log page title and URL
+                title = await page.title()
+                current_url = page.url
+                logger.info(f"eBay: Page title='{title}', url='{current_url}'")
 
                 listings = []
                 seen_ids = set()
 
                 items = await page.query_selector_all(".s-item")
                 logger.info(f"eBay: Found {len(items)} .s-item elements")
+
+                # If no items found, log page snippet for debugging
+                if not items:
+                    try:
+                        snippet = await page.text_content("body") or ""
+                        logger.warning(f"eBay: No items found. Page text (first 1000): {snippet[:1000]}")
+                    except Exception:
+                        pass
 
                 for item in items:
                     try:

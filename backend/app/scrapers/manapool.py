@@ -1,18 +1,13 @@
 import logging
 import re
 
-import requests
-from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 from app.scrapers.base import BaseScraper, ListingInfo, ScrapeResult
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-}
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 
 
 def parse_price(text: str) -> float | None:
@@ -26,75 +21,89 @@ class ManapoolScraper(BaseScraper):
     async def scrape(self, url: str) -> ScrapeResult:
         try:
             logger.info(f"Manapool: Fetching {url}")
-            response = requests.get(url, headers=HEADERS, timeout=15)
-            response.raise_for_status()
 
-            soup = BeautifulSoup(response.text, "lxml")
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                )
+                context = await browser.new_context(
+                    user_agent=USER_AGENT,
+                    viewport={"width": 1920, "height": 1080},
+                )
+                page = await context.new_page()
 
-            price = None
-            available = False
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                # Wait for dynamic content to render
+                await page.wait_for_timeout(5000)
 
-            # Look for price elements on the card page
-            price_selectors = [
-                ".card-price",
-                ".price",
-                "[class*='price']",
-                ".product-price",
-                ".card-detail-price",
-            ]
-
-            for selector in price_selectors:
-                elements = soup.select(selector)
-                for el in elements:
-                    text = el.get_text(strip=True)
-                    parsed = parse_price(text)
-                    if parsed and parsed > 0:
-                        price = parsed
-                        available = True
-                        break
-                if price:
-                    break
-
-            # Check for availability indicators
-            page_text = soup.get_text().lower()
-            if "sold out" in page_text or "out of stock" in page_text:
+                price = None
                 available = False
-            elif "add to cart" in page_text or "buy now" in page_text:
-                available = True
+                listings = []
 
-            # Look for individual vendor/seller listings
-            listings = []
-            listing_selectors = [
-                ".vendor-listing",
-                ".seller-listing",
-                ".listing-row",
-                "tr[class*='listing']",
-                ".card-listing",
-            ]
+                # Try to find "For Sale" listing rows with prices
+                # Manapool renders listings dynamically; look for common price patterns
+                price_selectors = [
+                    "[class*='price']",
+                    "[class*='Price']",
+                    "[class*='listing'] [class*='price']",
+                    "[class*='cost']",
+                    "button:has-text('Add to Cart')",
+                ]
 
-            for selector in listing_selectors:
-                rows = soup.select(selector)
-                for row in rows:
-                    row_text = row.get_text(strip=True)
-                    row_price = parse_price(row_text)
-                    if row_price and row_price > 0:
-                        # Try to find a link in the row
-                        link_el = row.select_one("a[href]")
-                        link = link_el["href"] if link_el else url
+                for selector in price_selectors:
+                    try:
+                        elements = await page.query_selector_all(selector)
+                        for el in elements:
+                            text = await el.text_content()
+                            if text:
+                                parsed = parse_price(text.strip())
+                                if parsed and parsed > 0:
+                                    if price is None or parsed < price:
+                                        price = parsed
+                                    available = True
+                                    listings.append(
+                                        ListingInfo(
+                                            title="Manapool Listing",
+                                            price=parsed,
+                                            link=url,
+                                        )
+                                    )
+                    except Exception:
+                        continue
 
-                        listings.append(
-                            ListingInfo(
-                                title="Manapool Listing",
-                                price=row_price,
-                                link=link,
-                            )
-                        )
-                if listings:
-                    break
+                # Fallback: scan all text for dollar amounts near "Add to Cart"
+                if not price:
+                    try:
+                        body_text = await page.text_content("body") or ""
+                        # Look for prices in the page
+                        all_prices = re.findall(r"\$(\d+\.?\d*)", body_text)
+                        valid_prices = [float(p) for p in all_prices if float(p) > 0.5]
+                        if valid_prices:
+                            price = min(valid_prices)
+                            available = True
+                    except Exception:
+                        pass
 
-            if not price and listings:
-                price = min(l.price for l in listings)
-                available = True
+                # Check availability text
+                try:
+                    body_text = await page.text_content("body") or ""
+                    lower = body_text.lower()
+                    if "sold out" in lower or "out of stock" in lower or "no listings" in lower:
+                        available = False
+                    elif "add to cart" in lower:
+                        available = True
+                except Exception:
+                    pass
+
+                # Debug: log a snippet of the page
+                try:
+                    snippet = await page.text_content("body") or ""
+                    logger.info(f"Manapool: page text length={len(snippet)}, first 500 chars: {snippet[:500]}")
+                except Exception:
+                    pass
+
+                await browser.close()
 
             logger.info(
                 f"Manapool: price={price}, available={available}, "

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, RefreshCw } from 'lucide-react'
+import { ArrowLeft, ExternalLink, RefreshCw, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import type { Monitor, MonitorCreate, MonitorUpdate, PriceHistory } from '../types'
 import { api } from '../lib/api'
 import { formatCurrency, formatDate, sourceLabel } from '../lib/utils'
@@ -19,6 +19,8 @@ export function MonitorDetail() {
   const [historyLoading, setHistoryLoading] = useState(true)
   const [editOpen, setEditOpen] = useState(false)
   const [historyDays, setHistoryDays] = useState(7)
+  const [checkStatus, setCheckStatus] = useState<'idle' | 'checking' | 'success' | 'error'>('idle')
+  const [checkResult, setCheckResult] = useState<string>('')
 
   const monitorId = parseInt(id || '0')
 
@@ -84,15 +86,25 @@ export function MonitorDetail() {
   }
 
   const handleCheckNow = async () => {
+    setCheckStatus('checking')
+    setCheckResult('')
     try {
-      await api.checkNow(monitorId)
-      setTimeout(() => {
-        fetchMonitor()
-        fetchHistory()
-      }, 2000)
+      const result = await api.checkNow(monitorId)
+      if (result.error) {
+        setCheckStatus('error')
+        setCheckResult(String(result.error))
+      } else {
+        setCheckStatus('success')
+        const price = result.price != null ? `$${Number(result.price).toFixed(2)}` : 'N/A'
+        setCheckResult(`${result.status} — ${price}`)
+      }
+      fetchMonitor()
+      fetchHistory()
     } catch (err) {
-      console.error('Failed to check now:', err)
+      setCheckStatus('error')
+      setCheckResult(err instanceof Error ? err.message : 'Unknown error')
     }
+    setTimeout(() => setCheckStatus('idle'), 5000)
   }
 
   if (loading) {
@@ -177,10 +189,23 @@ export function MonitorDetail() {
           <span className="text-sm">{monitor.alerts_enabled ? 'Alerts enabled' : 'Alerts disabled'}</span>
         </div>
         <div className="flex-1" />
-        <Button variant="outline" size="sm" onClick={handleCheckNow}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Check Now
+        <Button variant="outline" size="sm" onClick={handleCheckNow} disabled={checkStatus === 'checking'}>
+          {checkStatus === 'checking' ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : checkStatus === 'success' ? (
+            <CheckCircle className="h-4 w-4 mr-2 text-green-500" />
+          ) : checkStatus === 'error' ? (
+            <XCircle className="h-4 w-4 mr-2 text-red-500" />
+          ) : (
+            <RefreshCw className="h-4 w-4 mr-2" />
+          )}
+          {checkStatus === 'checking' ? 'Checking...' : checkStatus === 'success' ? 'Done!' : checkStatus === 'error' ? 'Failed' : 'Check Now'}
         </Button>
+        {checkResult && (
+          <span className={`text-xs ${checkStatus === 'error' ? 'text-red-500' : 'text-green-500'}`}>
+            {checkResult}
+          </span>
+        )}
         <Button variant="outline" size="sm" onClick={() => window.open(listingUrl, '_blank')}>
           <ExternalLink className="h-4 w-4 mr-2" />
           View Listing
