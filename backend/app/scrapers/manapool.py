@@ -19,11 +19,22 @@ def parse_price(text: str) -> float | None:
 
 
 def _find_price_in_dict(d: dict) -> float | None:
-    """Recursively search a dict for price-like numeric values."""
-    price_keys = ["price", "total_price", "unit_price", "amount", "cost",
-                  "listing_price", "sale_price", "card_price"]
+    """Search a dict for listing price, avoiding shipping/fee fields."""
+    # Explicit keys to match
+    good_keys = {"price", "total_price", "unit_price", "listing_price",
+                 "sale_price", "card_price", "cost"}
+    # Keys to skip even though they contain "price"/"cost"
+    bad_keywords = {"shipping", "delivery", "fee", "tax", "discount",
+                    "original", "compare", "msrp", "retail"}
+
     for k, v in d.items():
-        if any(pk in k.lower() for pk in ["price", "cost", "amount"]):
+        k_lower = k.lower()
+        # Skip shipping/fee/tax fields
+        if any(bk in k_lower for bk in bad_keywords):
+            continue
+        if k_lower in good_keys or (
+            "price" in k_lower and not any(bk in k_lower for bk in bad_keywords)
+        ):
             if isinstance(v, (int, float)) and v > 0:
                 return float(v)
             elif isinstance(v, str):
@@ -100,6 +111,10 @@ class ManapoolScraper(BaseScraper):
                             if key in data and isinstance(data[key], list):
                                 items = data[key]
                                 break
+
+                    if items and isinstance(items[0], dict):
+                        sample = {k: v for k, v in list(items[0].items())[:6]}
+                        logger.info(f"Manapool API: first item keys={list(items[0].keys())}, sample={sample}")
 
                     for item in items:
                         if not isinstance(item, dict):

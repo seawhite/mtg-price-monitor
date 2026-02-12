@@ -121,10 +121,12 @@ async def check_single_monitor(monitor_id: int) -> dict:
                     if sent:
                         monitor.last_alerted_at = now
 
-            # For eBay, record and alert on individual tracked listings
-            if monitor.source == "ebay" and tracked_listings:
+            # Record and alert on individual tracked listings (all sources)
+            if tracked_listings:
                 for listing in tracked_listings:
-                    # Record all tracked listings in history
+                    # Skip if same price as tracked_price (already recorded above)
+                    if listing.price == tracked_price:
+                        continue
                     lh = PriceHistory(
                         monitor_id=monitor.id,
                         price=listing.price,
@@ -140,11 +142,14 @@ async def check_single_monitor(monitor_id: int) -> dict:
                             monitor.alerts_enabled
                             and should_send_alert(monitor.last_alerted_at)
                         ):
+                            link = listing.link or monitor.url
+                            if monitor.source == "ebay" and not link.startswith("http"):
+                                link = f"https://www.ebay.com/sch/i.html?_nkw={monitor.url}&LH_BIN=1&LH_PrefLoc=1"
                             sent = send_alert(
                                 card_name=monitor.name,
                                 price=listing.price,
-                                source="eBay",
-                                link=listing.link,
+                                source=monitor.source.capitalize(),
+                                link=link,
                                 min_price=monitor.min_price,
                                 max_price=monitor.max_price,
                             )

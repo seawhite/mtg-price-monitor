@@ -172,24 +172,39 @@ class EbayScraper(BaseScraper):
                         logger.debug(f"eBay: Skipping non-matching listing: '{title[:80]}'")
                         continue
 
-                    # Extract price: try known selectors, then search all text
+                    # Extract price — avoid shipping/secondary prices
                     price = None
-                    for price_sel in [".s-item__price", "[class*='price']", "span.BOLD"]:
-                        price_el = item.select_one(price_sel)
-                        if price_el:
+                    # Exclude elements whose class contains these keywords
+                    shipping_keywords = {"shipping", "delivery", "postage", "original",
+                                        "was", "strikethrough", "secondary", "additional"}
+
+                    for price_sel in [".s-item__price", "[class*='price']"]:
+                        for price_el in item.select(price_sel):
+                            # Skip shipping/secondary price elements
+                            el_classes = " ".join(price_el.get("class", [])).lower()
+                            parent_classes = " ".join(price_el.parent.get("class", [])).lower() if price_el.parent else ""
+                            all_classes = el_classes + " " + parent_classes
+                            if any(kw in all_classes for kw in shipping_keywords):
+                                continue
                             price_text = price_el.get_text(strip=True)
                             if " to " in price_text:
                                 continue
                             price = parse_price(price_text)
                             if price and price > 0:
                                 break
+                        if price:
+                            break
 
-                    # Fallback: find any $X.XX pattern in item text
+                    # Fallback: find $X.XX in item text, but skip shipping lines
                     if not price:
-                        item_text = item.get_text()
-                        price_matches = re.findall(r"\$(\d+[\.,]\d{2})", item_text)
-                        if price_matches:
-                            price = float(price_matches[0].replace(",", ""))
+                        for line in item.stripped_strings:
+                            line_lower = line.lower()
+                            if any(kw in line_lower for kw in ["shipping", "delivery", "postage"]):
+                                continue
+                            m = re.search(r"\$(\d+[\.,]\d{2})", line)
+                            if m:
+                                price = float(m.group(1).replace(",", ""))
+                                break
 
                     if not price or price <= 0:
                         continue
