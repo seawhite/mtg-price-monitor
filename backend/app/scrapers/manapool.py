@@ -88,8 +88,9 @@ class ManapoolScraper(BaseScraper):
                 available = False
 
                 # Strategy 1: Parse intercepted API responses for listings
-                # Manapool uses Supabase (sb-api.manapool.com) which returns lists of items
+                # Manapool uses Supabase (sb-api.manapool.com) which stores prices in CENTS
                 for resp in api_responses:
+                    is_supabase = "sb-api" in resp["url"]
                     data = resp["data"]
                     items = []
                     if isinstance(data, list):
@@ -106,6 +107,9 @@ class ManapoolScraper(BaseScraper):
                         # Recursively search for price in nested dict (Supabase joins)
                         item_price = _find_price_in_dict(item)
                         if item_price and item_price > 0:
+                            # Supabase stores prices in cents — convert to dollars
+                            if is_supabase:
+                                item_price = item_price / 100.0
                             # Extract seller/condition info from any level
                             seller = (item.get("seller_name") or item.get("seller")
                                       or item.get("shop_name") or "")
@@ -118,7 +122,7 @@ class ManapoolScraper(BaseScraper):
                             listings.append(
                                 ListingInfo(
                                     title=title,
-                                    price=item_price,
+                                    price=round(item_price, 2),
                                     link=url,
                                 )
                             )
