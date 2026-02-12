@@ -107,6 +107,14 @@ class EbayScraper(BaseScraper):
                         if sponsored:
                             continue
 
+                        # Skip non-US items
+                        loc_el = await item.query_selector(".s-item__location, .s-item__itemLocation")
+                        if loc_el:
+                            loc_text = (await loc_el.text_content() or "").strip().lower()
+                            if loc_text and "united states" not in loc_text and "us" not in loc_text.split():
+                                logger.debug(f"eBay: Skipping non-US item: {loc_text}")
+                                continue
+
                         # Deduplicate
                         if listing_id and listing_id in seen_ids:
                             continue

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   LineChart,
   Line,
@@ -23,8 +23,59 @@ const TIME_RANGES = [
   { label: 'All', days: 365 },
 ]
 
+const GRANULARITIES = [
+  { label: '1m', minutes: 1 },
+  { label: '5m', minutes: 5 },
+  { label: '15m', minutes: 15 },
+  { label: '1h', minutes: 60 },
+]
+
+interface AggregatedPoint {
+  time: string
+  low: number
+  high: number
+  price: number
+}
+
+function aggregateHistory(history: PriceHistory[], granMinutes: number): AggregatedPoint[] {
+  const priced = history.filter((h) => h.price !== null && h.checked_at)
+  if (!priced.length) return []
+
+  const buckets: Record<string, number[]> = {}
+
+  for (const h of priced) {
+    const ts = new Date(h.checked_at!).getTime()
+    const bucketTs = Math.floor(ts / (granMinutes * 60000)) * (granMinutes * 60000)
+    const key = String(bucketTs)
+    if (!buckets[key]) buckets[key] = []
+    buckets[key].push(h.price!)
+  }
+
+  return Object.entries(buckets)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([key, prices]) => {
+      const d = new Date(Number(key))
+      const fmt =
+        granMinutes >= 60
+          ? d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric' })
+          : d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      return {
+        time: fmt,
+        low: Math.min(...prices),
+        high: Math.max(...prices),
+        price: prices.reduce((a, b) => a + b, 0) / prices.length,
+      }
+    })
+}
+
 export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProps) {
   const [rangeIdx, setRangeIdx] = useState(0)
+  const [granIdx, setGranIdx] = useState(2) // default 15m
+
+  const data = useMemo(
+    () => aggregateHistory(history, GRANULARITIES[granIdx].minutes),
+    [history, granIdx]
+  )
 
   if (isLoading) {
     return (
@@ -42,32 +93,34 @@ export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProp
     )
   }
 
-  const data = history
-    .filter((h) => h.price !== null)
-    .map((h) => ({
-      time: new Date(h.checked_at!).toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-      }),
-      price: h.price,
-      available: h.available,
-    }))
-
   return (
     <div>
-      <div className="flex gap-1 mb-4">
-        {TIME_RANGES.map((r, i) => (
-          <Button
-            key={r.label}
-            variant={rangeIdx === i ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => { setRangeIdx(i); onRangeChange?.(r.days) }}
-          >
-            {r.label}
-          </Button>
-        ))}
+      <div className="flex items-center gap-4 mb-4">
+        <div className="flex gap-1">
+          {TIME_RANGES.map((r, i) => (
+            <Button
+              key={r.label}
+              variant={rangeIdx === i ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => { setRangeIdx(i); onRangeChange?.(r.days) }}
+            >
+              {r.label}
+            </Button>
+          ))}
+        </div>
+        <span className="text-xs text-muted-foreground">Granularity:</span>
+        <div className="flex gap-1">
+          {GRANULARITIES.map((g, i) => (
+            <Button
+              key={g.label}
+              variant={granIdx === i ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setGranIdx(i)}
+            >
+              {g.label}
+            </Button>
+          ))}
+        </div>
       </div>
       <ResponsiveContainer width="100%" height={300}>
         <LineChart data={data}>
@@ -83,7 +136,10 @@ export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProp
             className="text-muted-foreground"
           />
           <Tooltip
-            formatter={(value: number) => [`$${value.toFixed(2)}`, 'Price']}
+            formatter={(value: number, name: string) => {
+              const label = name === 'high' ? 'High' : name === 'low' ? 'Low' : 'Avg'
+              return [`$${value.toFixed(2)}`, label]
+            }}
             labelStyle={{ color: 'hsl(var(--foreground))' }}
             contentStyle={{
               backgroundColor: 'hsl(var(--card))',
@@ -93,11 +149,21 @@ export function PriceChart({ history, isLoading, onRangeChange }: PriceChartProp
           />
           <Line
             type="monotone"
-            dataKey="price"
+            dataKey="high"
             stroke="hsl(var(--primary))"
             strokeWidth={2}
-            dot={{ r: 3 }}
-            activeDot={{ r: 5 }}
+            dot={false}
+            activeDot={{ r: 4 }}
+            name="high"
+          />
+          <Line
+            type="monotone"
+            dataKey="low"
+            stroke="hsl(142 76% 36%)"
+            strokeWidth={2}
+            dot={false}
+            activeDot={{ r: 4 }}
+            name="low"
           />
         </LineChart>
       </ResponsiveContainer>

@@ -193,9 +193,9 @@ export function MonitorDetail() {
         <PriceChart history={history} isLoading={historyLoading} onRangeChange={(days) => setHistoryDays(days)} />
       </div>
 
-      {/* Recent Checks Table */}
+      {/* Recent Checks — Hourly High/Low */}
       <div className="rounded-lg border bg-card p-6">
-        <h2 className="text-lg font-semibold mb-4">Recent Checks</h2>
+        <h2 className="text-lg font-semibold mb-4">Recent Checks (Hourly)</h2>
         {history.length === 0 ? (
           <p className="text-muted-foreground text-sm">No checks recorded yet.</p>
         ) : (
@@ -203,29 +203,47 @@ export function MonitorDetail() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b">
-                  <th className="text-left py-2 px-3 font-medium">Time</th>
-                  <th className="text-left py-2 px-3 font-medium">Price</th>
-                  <th className="text-left py-2 px-3 font-medium">Available</th>
-                  <th className="text-left py-2 px-3 font-medium">Details</th>
+                  <th className="text-left py-2 px-3 font-medium">Hour</th>
+                  <th className="text-right py-2 px-3 font-medium">Low</th>
+                  <th className="text-right py-2 px-3 font-medium">High</th>
+                  <th className="text-right py-2 px-3 font-medium">Checks</th>
+                  <th className="text-center py-2 px-3 font-medium">Available</th>
                 </tr>
               </thead>
               <tbody>
-                {[...history].reverse().slice(0, 50).map((h) => (
-                  <tr key={h.id} className="border-b last:border-0">
-                    <td className="py-2 px-3">{formatDate(h.checked_at)}</td>
-                    <td className="py-2 px-3">{formatCurrency(h.price)}</td>
-                    <td className="py-2 px-3">
-                      {h.available ? (
-                        <span className="text-green-600 font-medium">Yes</span>
-                      ) : (
-                        <span className="text-muted-foreground">No</span>
-                      )}
-                    </td>
-                    <td className="py-2 px-3 text-muted-foreground max-w-[200px] truncate">
-                      {h.source_detail || '-'}
-                    </td>
-                  </tr>
-                ))}
+                {(() => {
+                  const grouped: Record<string, { prices: number[]; count: number; available: boolean }> = {}
+                  for (const h of history) {
+                    if (!h.checked_at) continue
+                    const d = new Date(h.checked_at)
+                    const hourKey = d.toLocaleString('en-US', {
+                      month: 'short', day: 'numeric', hour: 'numeric',
+                    })
+                    if (!grouped[hourKey]) grouped[hourKey] = { prices: [], count: 0, available: false }
+                    grouped[hourKey].count++
+                    if (h.price !== null) grouped[hourKey].prices.push(h.price)
+                    if (h.available) grouped[hourKey].available = true
+                  }
+                  return Object.entries(grouped).reverse().slice(0, 100).map(([hour, data]) => (
+                    <tr key={hour} className="border-b last:border-0">
+                      <td className="py-2 px-3">{hour}</td>
+                      <td className="py-2 px-3 text-right">
+                        {data.prices.length ? formatCurrency(Math.min(...data.prices)) : '—'}
+                      </td>
+                      <td className="py-2 px-3 text-right">
+                        {data.prices.length ? formatCurrency(Math.max(...data.prices)) : '—'}
+                      </td>
+                      <td className="py-2 px-3 text-right">{data.count}</td>
+                      <td className="py-2 px-3 text-center">
+                        {data.available ? (
+                          <span className="text-green-500 font-medium">Yes</span>
+                        ) : (
+                          <span className="text-muted-foreground">No</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                })()}
               </tbody>
             </table>
           </div>
