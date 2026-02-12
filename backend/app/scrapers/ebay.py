@@ -2,18 +2,13 @@ import logging
 import re
 from urllib.parse import quote_plus
 
-import requests
-from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 from app.scrapers.base import BaseScraper, ListingInfo, ScrapeResult
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-}
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 
 
 def parse_price(text: str) -> float | None:
@@ -50,70 +45,87 @@ class EbayScraper(BaseScraper):
                     search_url += "&LH_PrefLoc=1"
 
             logger.info(f"eBay: Fetching {search_url}")
-            response = requests.get(search_url, headers=HEADERS, timeout=15)
-            response.raise_for_status()
 
-            soup = BeautifulSoup(response.text, "lxml")
-            listings = []
-            seen_ids = set()
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                )
+                context = await browser.new_context(
+                    user_agent=USER_AGENT,
+                    viewport={"width": 1920, "height": 1080},
+                )
+                page = await context.new_page()
 
-            items = soup.select(".s-item")
-            for item in items:
-                try:
-                    # Skip the first "Shop on eBay" placeholder
-                    title_el = item.select_one(".s-item__title")
-                    if not title_el:
-                        continue
-                    title = title_el.get_text(strip=True)
-                    if title.lower().startswith("shop on ebay"):
-                        continue
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                # Wait for search results to render
+                await page.wait_for_timeout(3000)
 
-                    # Price
-                    price_el = item.select_one(".s-item__price")
-                    if not price_el:
-                        continue
-                    price_text = price_el.get_text(strip=True)
+                listings = []
+                seen_ids = set()
 
-                    # Skip price ranges like "$10.00 to $20.00"
-                    if " to " in price_text:
-                        continue
+                items = await page.query_selector_all(".s-item")
+                logger.info(f"eBay: Found {len(items)} .s-item elements")
 
-                    price = parse_price(price_text)
-                    if not price or price <= 0:
-                        continue
+                for item in items:
+                    try:
+                        # Skip the first "Shop on eBay" placeholder
+                        title_el = await item.query_selector(".s-item__title")
+                        if not title_el:
+                            continue
+                        title = (await title_el.text_content() or "").strip()
+                        if title.lower().startswith("shop on ebay"):
+                            continue
 
-                    # Link
-                    link_el = item.select_one(".s-item__link")
-                    link = link_el["href"] if link_el else ""
+                        # Price
+                        price_el = await item.query_selector(".s-item__price")
+                        if not price_el:
+                            continue
+                        price_text = (await price_el.text_content() or "").strip()
 
-                    # Extract listing ID from link
-                    listing_id = ""
-                    id_match = re.search(r"/itm/(\d+)", link)
-                    if id_match:
-                        listing_id = id_match.group(1)
+                        # Skip price ranges like "$10.00 to $20.00"
+                        if " to " in price_text:
+                            continue
 
-                    # Skip sponsored items
-                    sponsored = item.select_one(".s-item__ad-badge, [class*='SPONSORED']")
-                    if sponsored:
-                        continue
+                        price = parse_price(price_text)
+                        if not price or price <= 0:
+                            continue
 
-                    # Deduplicate
-                    if listing_id and listing_id in seen_ids:
-                        continue
-                    if listing_id:
-                        seen_ids.add(listing_id)
+                        # Link
+                        link_el = await item.query_selector(".s-item__link")
+                        link = await link_el.get_attribute("href") if link_el else ""
+                        link = link or ""
 
-                    listings.append(
-                        ListingInfo(
-                            title=title,
-                            price=price,
-                            link=link,
-                            listing_id=listing_id,
+                        # Extract listing ID from link
+                        listing_id = ""
+                        id_match = re.search(r"/itm/(\d+)", link)
+                        if id_match:
+                            listing_id = id_match.group(1)
+
+                        # Skip sponsored items
+                        sponsored = await item.query_selector(".s-item__ad-badge, [class*='SPONSORED']")
+                        if sponsored:
+                            continue
+
+                        # Deduplicate
+                        if listing_id and listing_id in seen_ids:
+                            continue
+                        if listing_id:
+                            seen_ids.add(listing_id)
+
+                        listings.append(
+                            ListingInfo(
+                                title=title,
+                                price=price,
+                                link=link,
+                                listing_id=listing_id,
+                            )
                         )
-                    )
-                except Exception as e:
-                    logger.debug(f"eBay: Error parsing item: {e}")
-                    continue
+                    except Exception as e:
+                        logger.debug(f"eBay: Error parsing item: {e}")
+                        continue
+
+                await browser.close()
 
             lowest_price = min((l.price for l in listings), default=None)
             available = len(listings) > 0
