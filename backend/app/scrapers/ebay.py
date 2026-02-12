@@ -1,6 +1,6 @@
 import logging
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -17,6 +17,33 @@ def parse_price(text: str) -> float | None:
     if match:
         return float(match.group(1).replace(",", ""))
     return None
+
+
+def _normalize(text: str) -> str:
+    """Strip punctuation and lowercase for comparison."""
+    return re.sub(r"[^\w\s]", "", text).lower()
+
+
+def _extract_search_terms(url: str) -> str:
+    """Extract the search keywords from an eBay URL or raw search term."""
+    if url.startswith("http"):
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        nkw = qs.get("_nkw", [""])[0]
+        return nkw
+    return url
+
+
+def _title_matches_search(title: str, search_term: str) -> bool:
+    """Check that a listing title contains all significant search keywords."""
+    norm_title = _normalize(title)
+    norm_search = _normalize(search_term)
+    keywords = [w for w in norm_search.split() if len(w) >= 2]
+    if not keywords:
+        return True
+    matched = sum(1 for kw in keywords if kw in norm_title)
+    # Require all keywords to be present
+    return matched == len(keywords)
 
 
 class EbayScraper(BaseScraper):
@@ -49,7 +76,9 @@ class EbayScraper(BaseScraper):
                 if "LH_PrefLoc=1" not in search_url:
                     search_url += "&LH_PrefLoc=1"
 
-            logger.info(f"eBay: Fetching {search_url}")
+            # Extract search keywords for title validation
+            search_term = _extract_search_terms(search_url) if url.startswith("http") else url
+            logger.info(f"eBay: Fetching {search_url} (search_term='{search_term}')")
 
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
@@ -138,6 +167,11 @@ class EbayScraper(BaseScraper):
                     if not title or title.lower().startswith("shop on ebay"):
                         continue
 
+                    # Validate title matches search keywords
+                    if search_term and not _title_matches_search(title, search_term):
+                        logger.debug(f"eBay: Skipping non-matching listing: '{title[:80]}'")
+                        continue
+
                     # Extract price: try known selectors, then search all text
                     price = None
                     for price_sel in [".s-item__price", "[class*='price']", "span.BOLD"]:
@@ -196,8 +230,8 @@ class EbayScraper(BaseScraper):
             available = len(listings) > 0
 
             logger.info(
-                f"eBay: Found {len(listings)} listings, "
-                f"lowest={lowest_price}"
+                f"eBay: Found {len(listings)} matching listings "
+                f"(search='{search_term}'), lowest={lowest_price}"
             )
             return ScrapeResult(
                 price=lowest_price,
