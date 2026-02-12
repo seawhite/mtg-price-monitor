@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { ExternalLink, RefreshCw, ShoppingCart, Store, Globe, BarChart3 } from 'lucide-react'
 import { LineChart, Line, ResponsiveContainer, Tooltip } from 'recharts'
 import type { Monitor, PriceHistory } from '../types'
-import { formatCurrency, formatDate, sourceLabel } from '../lib/utils'
+import { formatCurrency, formatDate, parseUTC, sourceLabel } from '../lib/utils'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Switch } from './ui/switch'
@@ -68,7 +68,7 @@ export function MonitorCard({ monitor, priceHistory = [], onToggleAlerts, onChec
     if (!priced.length) return []
     const buckets: Record<string, { prices: number[]; label: string }> = {}
     for (const h of priced) {
-      const ts = new Date(h.checked_at!).getTime()
+      const ts = parseUTC(h.checked_at!).getTime()
       const hourTs = Math.floor(ts / 3600000) * 3600000
       const key = String(hourTs)
       if (!buckets[key]) {

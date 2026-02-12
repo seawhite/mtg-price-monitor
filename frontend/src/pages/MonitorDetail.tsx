@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, RefreshCw, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import type { Monitor, MonitorCreate, MonitorUpdate, PriceHistory } from '../types'
 import { api } from '../lib/api'
-import { formatCurrency, formatDate, sourceLabel } from '../lib/utils'
+import { formatCurrency, formatDate, parseUTC, sourceLabel } from '../lib/utils'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Switch } from '../components/ui/switch'
@@ -242,7 +242,7 @@ export function MonitorDetail() {
                   const grouped: Record<string, { prices: number[]; count: number; available: boolean }> = {}
                   for (const h of history) {
                     if (!h.checked_at) continue
-                    const d = new Date(h.checked_at)
+                    const d = parseUTC(h.checked_at)
                     const hourKey = d.toLocaleString('en-US', {
                       month: 'short', day: 'numeric', hour: 'numeric',
                     })

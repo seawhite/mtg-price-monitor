@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import type { PriceHistory } from '../types'
+import { parseUTC } from '../lib/utils'
 import { Button } from './ui/button'
 
 interface PriceChartProps {
@@ -55,7 +56,7 @@ function aggregateHistory(history: PriceHistory[], granMinutes: number): Aggrega
   const buckets: Record<string, { prices: number[]; lows: number[]; highs: number[] }> = {}
 
   for (const h of priced) {
-    const ts = new Date(h.checked_at!).getTime()
+    const ts = parseUTC(h.checked_at!).getTime()
     const bucketTs = Math.floor(ts / (granMinutes * 60000)) * (granMinutes * 60000)
     const key = String(bucketTs)
     if (!buckets[key]) buckets[key] = { prices: [], lows: [], highs: [] }

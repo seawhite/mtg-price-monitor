@@ -13,9 +13,17 @@ export function formatCurrency(value: number | null | undefined): string {
   }).format(value)
 }
 
+/** Parse a datetime string from the API as UTC (backend sends naive UTC without 'Z'). */
+export function parseUTC(value: string): Date {
+  if (!value.endsWith('Z') && !value.includes('+') && !value.includes('-', 10)) {
+    return new Date(value + 'Z')
+  }
+  return new Date(value)
+}
+
 export function formatDate(value: string | null | undefined): string {
   if (!value) return 'Never'
-  const date = new Date(value)
+  const date = parseUTC(value)
   return date.toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',

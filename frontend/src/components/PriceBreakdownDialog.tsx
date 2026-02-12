@@ -1,5 +1,5 @@
 import type { PriceHistory } from '../types'
-import { formatCurrency } from '../lib/utils'
+import { formatCurrency, parseUTC } from '../lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -28,7 +28,7 @@ function buildDaySummaries(history: PriceHistory[]): DaySummary[] {
 
   for (const h of history) {
     if (!h.checked_at) continue
-    const date = new Date(h.checked_at).toLocaleDateString('en-US', {
+    const date = parseUTC(h.checked_at).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
