@@ -99,13 +99,79 @@ npm install
 npm run dev
 ```
 
-## Building & Pushing Docker Images
+## Building & Pushing Docker Images (Dev Machine)
+
+After making code changes, build and push updated images from the project root:
 
 ```bash
-docker build -t seawhite/mtg-price-monitor-backend ./backend
-docker build -t seawhite/mtg-price-monitor-frontend ./frontend
-docker push seawhite/mtg-price-monitor-backend
-docker push seawhite/mtg-price-monitor-frontend
+# Build both images
+docker build -t seawhite/mtg-price-monitor-backend:latest ./backend
+docker build -t seawhite/mtg-price-monitor-frontend:latest ./frontend
+
+# Push to Docker Hub
+docker push seawhite/mtg-price-monitor-backend:latest
+docker push seawhite/mtg-price-monitor-frontend:latest
+```
+
+## Deploying / Updating on Remote Server
+
+### First-time setup
+
+```bash
+# Create the data directory
+mkdir -p /docker/mtg-price-monitor/data
+
+# Copy the compose and env files to the server
+scp mtg-price-monitor.yml mtg-price-monitor.env.example user@server:/docker/mtg-price-monitor/
+
+# SSH into the server
+ssh user@server
+cd /docker/mtg-price-monitor
+
+# Create and configure the env file
+cp mtg-price-monitor.env.example mtg-price-monitor.env
+nano mtg-price-monitor.env  # Fill in AWS credentials
+
+# Pull images and start
+docker compose -f mtg-price-monitor.yml up -d
+```
+
+### Updating after a new build
+
+```bash
+# On the remote server
+cd /docker/mtg-price-monitor
+
+# Pull latest images
+docker compose -f mtg-price-monitor.yml pull
+
+# Recreate containers with the new images
+docker compose -f mtg-price-monitor.yml up -d --force-recreate
+```
+
+Or as a one-liner:
+
+```bash
+docker compose -f mtg-price-monitor.yml pull && docker compose -f mtg-price-monitor.yml up -d --force-recreate
+```
+
+### Viewing logs
+
+```bash
+# All services
+docker compose -f mtg-price-monitor.yml logs -f
+
+# Backend only
+docker compose -f mtg-price-monitor.yml logs -f backend
+
+# Frontend only
+docker compose -f mtg-price-monitor.yml logs -f frontend
+```
+
+### Stopping
+
+```bash
+docker compose -f mtg-price-monitor.yml down
 ```
 
 ## License
