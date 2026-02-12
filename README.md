@@ -26,12 +26,12 @@ cp .env.example .env
 ### 2. Run with Docker Compose
 
 ```bash
-docker compose -f reg-mtg.yml up -d
+docker compose -f mtg-price-monitor.yml up -d
 ```
 
 ### 3. Access the dashboard
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:6088](http://localhost:6088) in your browser.
 
 ## Pre-built Images
 
@@ -42,7 +42,7 @@ docker pull seawhite/mtg-price-monitor-backend:latest
 docker pull seawhite/mtg-price-monitor-frontend:latest
 ```
 
-Then run with `docker compose -f reg-mtg.yml up -d`.
+Then run with `docker compose -f mtg-price-monitor.yml up -d`.
 
 ## AWS Setup
 
@@ -77,7 +77,7 @@ Make sure you have a subscription (email, SMS, etc.) on the topic.
 
 - **Frontend**: React + Vite + TailwindCSS + shadcn/ui + Recharts
 - **Backend**: Python FastAPI + APScheduler + Playwright + BeautifulSoup4
-- **Database**: SQLite (persisted via Docker volume at `/docker/reg-mtg/data/`)
+- **Database**: SQLite (persisted via Docker volume at `/docker/mtg-price-monitor/data/`)
 - **Notifications**: AWS SNS via boto3
 
 ## Development

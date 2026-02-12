@@ -11,7 +11,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - /docker/reg-mtg/data:/app/data
+      - /docker/mtg-price-monitor/data:/app/data
     environment:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
@@ -34,6 +34,6 @@ services:
     container_name: mtg-monitor-frontend
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "6088:3000"
     depends_on:
       - backend
