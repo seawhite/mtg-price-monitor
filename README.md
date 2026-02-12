@@ -19,8 +19,8 @@ A full-stack application that monitors Magic: The Gathering card prices on **TCG
 ```bash
 git clone https://github.com/seawhite/mtg-price-monitor.git
 cd mtg-price-monitor
-cp .env.example .env
-# Edit .env with your AWS credentials
+cp mtg-price-monitor.env.example mtg-price-monitor.env
+# Edit mtg-price-monitor.env with your AWS credentials
 ```
 
 ### 2. Run with Docker Compose

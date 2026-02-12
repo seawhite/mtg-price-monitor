@@ -12,13 +12,9 @@ services:
       - "8000:8000"
     volumes:
       - /docker/mtg-price-monitor/data:/app/data
+    env_file:
+      - mtg-price-monitor.env
     environment:
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
-      - SNS_TOPIC_ARN=${SNS_TOPIC_ARN:-arn:aws:sns:us-west-2:328883027245:cwhitepersonal}
-      - ALERT_COOLDOWN_MINUTES=${ALERT_COOLDOWN_MINUTES:-30}
-      - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-60}
       - DATABASE_URL=sqlite:///data/monitors.db
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///data/monitors.db"
 
     class Config:
-        env_file = ".env"
+        env_file = "mtg-price-monitor.env"
 
 
 settings = Settings()
