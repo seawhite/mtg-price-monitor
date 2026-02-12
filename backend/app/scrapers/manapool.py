@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 
@@ -22,6 +23,8 @@ class ManapoolScraper(BaseScraper):
         try:
             logger.info(f"Manapool: Fetching {url}")
 
+            api_responses: list[dict] = []
+
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
                     headless=True,
@@ -33,81 +36,156 @@ class ManapoolScraper(BaseScraper):
                 )
                 page = await context.new_page()
 
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                # Wait for dynamic content to render
-                await page.wait_for_timeout(5000)
-
-                price = None
-                available = False
-                listings = []
-
-                # Try to find "For Sale" listing rows with prices
-                # Manapool renders listings dynamically; look for common price patterns
-                price_selectors = [
-                    "[class*='price']",
-                    "[class*='Price']",
-                    "[class*='listing'] [class*='price']",
-                    "[class*='cost']",
-                    "button:has-text('Add to Cart')",
-                ]
-
-                for selector in price_selectors:
+                # Intercept API responses to capture listing data
+                async def handle_response(response):
                     try:
-                        elements = await page.query_selector_all(selector)
-                        for el in elements:
-                            text = await el.text_content()
-                            if text:
-                                parsed = parse_price(text.strip())
-                                if parsed and parsed > 0:
-                                    if price is None or parsed < price:
-                                        price = parsed
-                                    available = True
-                                    listings.append(
-                                        ListingInfo(
-                                            title="Manapool Listing",
-                                            price=parsed,
-                                            link=url,
-                                        )
-                                    )
-                    except Exception:
-                        continue
-
-                # Fallback: scan all text for dollar amounts near "Add to Cart"
-                if not price:
-                    try:
-                        body_text = await page.text_content("body") or ""
-                        # Look for prices in the page
-                        all_prices = re.findall(r"\$(\d+\.?\d*)", body_text)
-                        valid_prices = [float(p) for p in all_prices if float(p) > 0.5]
-                        if valid_prices:
-                            price = min(valid_prices)
-                            available = True
+                        resp_url = response.url
+                        if response.status == 200 and (
+                            "listing" in resp_url.lower()
+                            or "for-sale" in resp_url.lower()
+                            or "inventory" in resp_url.lower()
+                            or "/api/" in resp_url.lower()
+                        ):
+                            ct = response.headers.get("content-type", "")
+                            if "json" in ct:
+                                body = await response.json()
+                                logger.info(f"Manapool API: {resp_url[:120]} -> keys={list(body.keys()) if isinstance(body, dict) else type(body).__name__}")
+                                api_responses.append({"url": resp_url, "data": body})
                     except Exception:
                         pass
 
-                # Check availability text
-                try:
-                    body_text = await page.text_content("body") or ""
-                    lower = body_text.lower()
-                    if "sold out" in lower or "out of stock" in lower or "no listings" in lower:
-                        available = False
-                    elif "add to cart" in lower:
-                        available = True
-                except Exception:
-                    pass
+                page.on("response", handle_response)
 
-                # Debug: log a snippet of the page
-                try:
-                    snippet = await page.text_content("body") or ""
-                    logger.info(f"Manapool: page text length={len(snippet)}, first 500 chars: {snippet[:500]}")
-                except Exception:
-                    pass
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                # Wait for dynamic content and API calls to complete
+                await page.wait_for_timeout(6000)
+
+                listings = []
+                price = None
+                available = False
+
+                # Strategy 1: Parse intercepted API responses for listings
+                for resp in api_responses:
+                    data = resp["data"]
+                    items = []
+                    if isinstance(data, list):
+                        items = data
+                    elif isinstance(data, dict):
+                        # Look for common API patterns
+                        for key in ["results", "listings", "data", "items", "for_sale", "inventory"]:
+                            if key in data and isinstance(data[key], list):
+                                items = data[key]
+                                break
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        item_price = None
+                        for pk in ["price", "total_price", "unit_price", "amount", "cost"]:
+                            if pk in item:
+                                try:
+                                    val = item[pk]
+                                    if isinstance(val, (int, float)):
+                                        item_price = float(val)
+                                    elif isinstance(val, str):
+                                        item_price = parse_price(val)
+                                    if item_price and item_price > 0:
+                                        break
+                                except Exception:
+                                    pass
+                        if item_price and item_price > 0:
+                            seller = item.get("seller_name", item.get("seller", item.get("shop_name", "Seller")))
+                            condition = item.get("condition", item.get("card_condition", ""))
+                            title = f"{seller} - {condition}".strip(" -") if seller else "Manapool Listing"
+                            listings.append(
+                                ListingInfo(
+                                    title=title,
+                                    price=item_price,
+                                    link=url,
+                                )
+                            )
+
+                # Strategy 2: Scrape visible DOM for listing rows if API interception missed
+                if not listings:
+                    logger.info("Manapool: No listings from API, scraping DOM")
+                    # Dump the full body text for debugging
+                    try:
+                        body_text = await page.text_content("body") or ""
+                        # Find all dollar amounts
+                        dollar_matches = re.findall(r"\$(\d+\.\d{2})", body_text)
+                        logger.info(f"Manapool: Found {len(dollar_matches)} dollar amounts in page: {dollar_matches[:20]}")
+
+                        # Try to find listing containers - look for elements that have both
+                        # a price and an "Add to Cart" or similar action
+                        # Try various selectors for listing rows
+                        row_selectors = [
+                            "[class*='listing']",
+                            "[class*='Listing']",
+                            "[class*='for-sale'] > div",
+                            "[class*='ForSale'] > div",
+                            "[class*='seller']",
+                            "[class*='Seller']",
+                            "table tbody tr",
+                            "[class*='row']",
+                            "[class*='inventory']",
+                            "[class*='card-item']",
+                        ]
+
+                        for selector in row_selectors:
+                            try:
+                                rows = await page.query_selector_all(selector)
+                                if rows:
+                                    logger.info(f"Manapool: selector '{selector}' found {len(rows)} elements")
+                                for row in rows:
+                                    text = await row.text_content() or ""
+                                    row_price = parse_price(text)
+                                    if row_price and row_price > 0.5:
+                                        listings.append(
+                                            ListingInfo(
+                                                title="Manapool Listing",
+                                                price=row_price,
+                                                link=url,
+                                            )
+                                        )
+                            except Exception:
+                                continue
+                            if listings:
+                                break
+
+                    except Exception as e:
+                        logger.warning(f"Manapool: DOM scrape error: {e}")
+
+                # Strategy 3: Fallback to all dollar amounts on page
+                if not listings:
+                    try:
+                        body_text = await page.text_content("body") or ""
+                        all_prices = re.findall(r"\$(\d+\.\d{2})", body_text)
+                        valid_prices = [float(p) for p in all_prices if float(p) > 0.5]
+                        for vp in valid_prices:
+                            listings.append(
+                                ListingInfo(title="Manapool Listing", price=vp, link=url)
+                            )
+                    except Exception:
+                        pass
+
+                # Deduplicate listings by price
+                seen_prices = set()
+                unique_listings = []
+                for l in listings:
+                    if l.price not in seen_prices:
+                        seen_prices.add(l.price)
+                        unique_listings.append(l)
+                listings = unique_listings
+
+                if listings:
+                    price = min(l.price for l in listings)
+                    available = True
 
                 await browser.close()
 
             logger.info(
                 f"Manapool: price={price}, available={available}, "
-                f"listings={len(listings)}"
+                f"listings={len(listings)}, "
+                f"api_responses={len(api_responses)}"
             )
             return ScrapeResult(
                 price=price, available=available, listings=listings

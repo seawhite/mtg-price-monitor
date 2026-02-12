@@ -167,7 +167,7 @@ async def debug_scrape(source: str = Query(...), url: str = Query(...)):
         raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
 
     result = await scraper.scrape(url)
-    return {
+    resp = {
         "price": result.price,
         "available": result.available,
         "error": result.error,
@@ -177,3 +177,8 @@ async def debug_scrape(source: str = Query(...), url: str = Query(...)):
             for l in result.listings[:20]
         ],
     }
+    # Include page debug info for eBay
+    if source == "ebay":
+        resp["page_text_snippet"] = EbayScraper.last_page_text[:2000]
+        resp["page_html_length"] = len(EbayScraper.last_page_html)
+    return resp
