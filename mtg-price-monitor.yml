@@ -9,7 +9,7 @@ services:
     container_name: mtg-monitor-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - /docker/mtg-price-monitor/data:/app/data
     env_file:
