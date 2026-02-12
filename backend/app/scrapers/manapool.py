@@ -25,7 +25,8 @@ def _find_price_in_dict(d: dict) -> float | None:
                  "sale_price", "card_price", "cost"}
     # Keys to skip even though they contain "price"/"cost"
     bad_keywords = {"shipping", "delivery", "fee", "tax", "discount",
-                    "original", "compare", "msrp", "retail"}
+                    "original", "compare", "msrp", "retail", "from_price",
+                    "market"}
 
     for k, v in d.items():
         k_lower = k.lower()
@@ -100,7 +101,13 @@ class ManapoolScraper(BaseScraper):
 
                 # Strategy 1: Parse intercepted API responses for listings
                 # Manapool uses Supabase (sb-api.manapool.com) which stores prices in CENTS
+                # Only process 'products_mtg_single' responses — these have individual seller listings.
+                # Skip 'cardsmtg' and 'cardsmtg_browse' which contain aggregate/metadata (from_price etc.)
                 for resp in api_responses:
+                    resp_url_lower = resp["url"].lower()
+                    # Only parse individual listing endpoints
+                    if "products" not in resp_url_lower and "listing" not in resp_url_lower and "for-sale" not in resp_url_lower and "inventory" not in resp_url_lower:
+                        continue
                     is_supabase = "sb-api" in resp["url"]
                     data = resp["data"]
                     items = []
