@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  backend:
+    image: seawhite/mtg-price-monitor-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mtg-monitor-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /docker/reg-mtg/data:/app/data
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-2}
+      - SNS_TOPIC_ARN=${SNS_TOPIC_ARN:-arn:aws:sns:us-west-2:328883027245:cwhitepersonal}
+      - ALERT_COOLDOWN_MINUTES=${ALERT_COOLDOWN_MINUTES:-30}
+      - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-60}
+      - DATABASE_URL=sqlite:///data/monitors.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    image: seawhite/mtg-price-monitor-frontend:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mtg-monitor-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
