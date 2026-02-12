@@ -40,7 +40,7 @@ export function Dashboard() {
 
   useEffect(() => {
     fetchMonitors()
-    const interval = setInterval(fetchMonitors, 15000)
+    const interval = setInterval(fetchMonitors, 60000)
     return () => clearInterval(interval)
   }, [fetchMonitors])
 

@@ -62,17 +62,32 @@ export function MonitorCard({ monitor, priceHistory = [], onToggleAlerts, onChec
     .filter(Boolean)
     .join(' - ')
 
-  const sparkData = priceHistory
-    .filter((h) => h.price !== null)
-    .map((h) => ({
-      time: new Date(h.checked_at!).toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-      }),
-      price: h.price,
-    }))
+  // Aggregate into hourly buckets to smooth out per-listing fluctuations
+  const sparkData = (() => {
+    const priced = priceHistory.filter((h) => h.price !== null && h.checked_at)
+    if (!priced.length) return []
+    const buckets: Record<string, { prices: number[]; label: string }> = {}
+    for (const h of priced) {
+      const ts = new Date(h.checked_at!).getTime()
+      const hourTs = Math.floor(ts / 3600000) * 3600000
+      const key = String(hourTs)
+      if (!buckets[key]) {
+        buckets[key] = {
+          prices: [],
+          label: new Date(hourTs).toLocaleString('en-US', {
+            month: 'short', day: 'numeric', hour: 'numeric',
+          }),
+        }
+      }
+      buckets[key].prices.push(h.price!)
+    }
+    return Object.entries(buckets)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([, bucket]) => ({
+        time: bucket.label,
+        price: Math.min(...bucket.prices),
+      }))
+  })()
 
   return (
     <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-5 hover:shadow-md transition-shadow">
@@ -123,6 +138,9 @@ export function MonitorCard({ monitor, priceHistory = [], onToggleAlerts, onChec
                 <LineChart data={sparkData}>
                   <Tooltip
                     formatter={(value: number) => [`$${value.toFixed(2)}`, 'Price']}
+                    labelFormatter={(_: unknown, payload: Array<{ payload?: { time?: string } }>) =>
+                      payload?.[0]?.payload?.time ?? ''
+                    }
                     labelStyle={{ color: 'hsl(var(--foreground))' }}
                     contentStyle={{
                       backgroundColor: 'hsl(var(--card))',
