@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     alert_cooldown_minutes: int = 30
     check_interval_seconds: int = 60
     database_url: str = "sqlite:///data/monitors.db"
+    ebay_client_id: str = ""
+    ebay_client_secret: str = ""
 
     class Config:
         env_file = "mtg-price-monitor.env"
