@@ -2,8 +2,8 @@ import logging
 import re
 from urllib.parse import quote_plus, parse_qs, urlparse
 
+import httpx
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
 
 from app.scrapers.base import BaseScraper, DEFAULT_USER_AGENT, ListingInfo, ScrapeResult, parse_price
 
@@ -72,45 +72,21 @@ class EbayScraper(BaseScraper):
             search_term = _extract_search_terms(search_url) if url.startswith("http") else url
             logger.info(f"eBay: Fetching {search_url} (search_term='{search_term}')")
 
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--disable-extensions",
-                        "--disable-background-networking",
-                        "--disable-default-apps",
-                        "--disable-sync",
-                        "--no-first-run",
-                        "--js-flags=--max-old-space-size=256",
-                    ],
-                )
-                context = await browser.new_context(
-                    user_agent=DEFAULT_USER_AGENT,
-                    viewport={"width": 1280, "height": 720},
-                    locale="en-US",
-                    java_script_enabled=False,
-                )
-                page = await context.new_page()
+            headers = {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Cache-Control": "no-cache",
+            }
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                resp = await client.get(search_url, headers=headers)
+                logger.info(f"eBay: Response status={resp.status_code}")
+                html = resp.text
 
-                # Block images, fonts, media to save memory
-                await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,ico,woff,woff2,ttf,otf,mp4,webm}", lambda route: route.abort())
-
-                response = await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-                logger.info(f"eBay: Response status={response.status if response else 'None'}")
-                await page.wait_for_timeout(3000)
-
-                # Get the full rendered HTML
-                html = await page.content()
-                EbayScraper.last_page_html = html
-                EbayScraper.last_page_text = await page.text_content("body") or ""
-                logger.info(f"eBay: HTML length={len(html)}")
-
-                await browser.close()
+            EbayScraper.last_page_html = html
+            EbayScraper.last_page_text = ""
+            logger.info(f"eBay: HTML length={len(html)}")
 
             # Parse the HTML with BeautifulSoup
             soup = BeautifulSoup(html, "lxml")
