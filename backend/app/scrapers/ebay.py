@@ -20,6 +20,12 @@ _EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope"
 # Cached OAuth token
 _token_cache: dict = {"token": None, "expires_at": 0}
 
+# Cached eBay cookies from challenge solving
+_cookie_cache: dict = {"cookies": {}, "expires_at": 0}
+
+# Domains allowed through Playwright route filter
+_ALLOWED_DOMAINS = {"ebay.com", "ebaystatic.com"}
+
 
 
 def _normalize(text: str) -> str:
@@ -216,31 +222,121 @@ class EbayScraper(BaseScraper):
             listings=listings,
         )
 
-    async def _scrape_via_html(self, search_url: str, search_term: str) -> ScrapeResult:
-        """Fallback: scrape eBay HTML via curl_cffi."""
+    async def _solve_challenge(self, url: str) -> dict[str, str]:
+        """Use Playwright to solve eBay's bot challenge page and return cookies."""
+        global _cookie_cache
+        from playwright.async_api import async_playwright
+
+        logger.info("eBay: Launching Playwright to solve challenge...")
+        first_nav_done = {"value": False}
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                    "--disable-extensions", "--no-first-run",
+                    "--js-flags=--max-old-space-size=128",
+                ],
+            )
+            context = await browser.new_context(
+                user_agent=DEFAULT_USER_AGENT,
+                viewport={"width": 800, "height": 600},
+            )
+            page = await context.new_page()
+
+            async def handle_route(route):
+                resource = route.request.resource_type
+                req_url = route.request.url
+                # Block heavy resources
+                if resource in ("image", "font", "media", "stylesheet"):
+                    await route.abort()
+                    return
+                # Block page reload after challenge solves (prevent heavy search page)
+                if resource == "document" and first_nav_done["value"]:
+                    logger.info("eBay challenge: Blocking post-challenge navigation")
+                    await route.abort()
+                    return
+                # Only allow eBay domains
+                if not any(d in req_url for d in _ALLOWED_DOMAINS):
+                    await route.abort()
+                    return
+                await route.continue_()
+
+            await page.route("**/*", handle_route)
+
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                first_nav_done["value"] = True
+                # Give challenge JS time to run and set cookies
+                await page.wait_for_timeout(10000)
+            except Exception as e:
+                logger.warning(f"eBay challenge navigation: {e}")
+
+            cookies_list = await context.cookies()
+            await browser.close()
+
+        cookie_dict = {c["name"]: c["value"] for c in cookies_list}
+        logger.info(f"eBay challenge: Got {len(cookie_dict)} cookies")
+
+        # Cache cookies for 1 hour
+        _cookie_cache["cookies"] = cookie_dict
+        _cookie_cache["expires_at"] = time.time() + 3600
+        return cookie_dict
+
+    async def _fetch_html(self, url: str, cookies: dict | None = None) -> str:
+        """Fetch eBay HTML via curl_cffi with optional cookies."""
         async with AsyncSession(impersonate="chrome120") as session:
             resp = await session.get(
-                search_url,
+                url,
                 headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9",
                 },
+                cookies=cookies,
                 timeout=30,
             )
-            logger.info(f"eBay scrape: status={resp.status_code}")
-            html = resp.text
+            logger.info(f"eBay scrape: status={resp.status_code}, len={len(resp.text)}")
+            return resp.text
 
-        logger.info(f"eBay scrape: HTML length={len(html)}")
+    @staticmethod
+    def _is_blocked(html: str) -> bool:
+        """Check if the response is eBay's bot detection page."""
+        soup = BeautifulSoup(html, "lxml")
+        title = soup.title.string if soup.title else ""
+        return "pardon" in title.lower() or "interruption" in title.lower()
+
+    async def _scrape_via_html(self, search_url: str, search_term: str) -> ScrapeResult:
+        """Fallback: scrape eBay HTML via curl_cffi, solving challenges if needed."""
+        global _cookie_cache
+
+        # Use cached cookies if available
+        cookies = None
+        if _cookie_cache["cookies"] and time.time() < _cookie_cache["expires_at"]:
+            cookies = _cookie_cache["cookies"]
+            logger.info(f"eBay scrape: Using {len(cookies)} cached cookies")
+
+        html = await self._fetch_html(search_url, cookies)
+
+        # If blocked, try solving the challenge
+        if self._is_blocked(html):
+            logger.warning("eBay scrape: Blocked — attempting challenge solve")
+            try:
+                cookies = await self._solve_challenge(search_url)
+                if cookies:
+                    html = await self._fetch_html(search_url, cookies)
+                    if self._is_blocked(html):
+                        logger.error("eBay scrape: Still blocked after challenge solve")
+                        return ScrapeResult(error="eBay challenge solve failed. Configure EBAY_CLIENT_ID and EBAY_CLIENT_SECRET for reliable access.")
+            except Exception as e:
+                logger.error(f"eBay challenge solve error: {e}")
+                return ScrapeResult(error=f"eBay challenge solve failed: {e}")
+
         EbayScraper.last_page_html = html
         EbayScraper.last_page_text = ""
 
         soup = BeautifulSoup(html, "lxml")
-
-        # Check for bot detection page
         page_title = soup.title.string if soup.title else ""
-        if "pardon" in page_title.lower() or "interruption" in page_title.lower():
-            logger.warning("eBay scrape: Blocked by bot detection (Pardon Our Interruption)")
-            return ScrapeResult(error="eBay blocked this IP. Configure EBAY_CLIENT_ID and EBAY_CLIENT_SECRET for reliable access.")
 
         listings = []
         seen_ids = set()
