@@ -93,17 +93,12 @@ class EbayScraper(BaseScraper):
                     user_agent=DEFAULT_USER_AGENT,
                     viewport={"width": 1280, "height": 720},
                     locale="en-US",
+                    java_script_enabled=False,
                 )
                 page = await context.new_page()
 
                 # Block images, fonts, media to save memory
                 await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,ico,woff,woff2,ttf,otf,mp4,webm}", lambda route: route.abort())
-                await page.route("**/ads/**", lambda route: route.abort())
-                await page.route("**/tracking/**", lambda route: route.abort())
-
-                await page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                """)
 
                 response = await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                 logger.info(f"eBay: Response status={response.status if response else 'None'}")
