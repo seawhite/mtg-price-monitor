@@ -93,7 +93,7 @@ class EbayScraper(BaseScraper):
                     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 """)
 
-                response = await page.goto(search_url, wait_until="networkidle", timeout=30000)
+                response = await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
                 logger.info(f"eBay: Response status={response.status if response else 'None'}")
                 await page.wait_for_timeout(3000)
 
