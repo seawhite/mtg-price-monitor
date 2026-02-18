@@ -80,14 +80,26 @@ class EbayScraper(BaseScraper):
                         "--disable-setuid-sandbox",
                         "--disable-blink-features=AutomationControlled",
                         "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-extensions",
+                        "--disable-background-networking",
+                        "--disable-default-apps",
+                        "--disable-sync",
+                        "--no-first-run",
+                        "--js-flags=--max-old-space-size=256",
                     ],
                 )
                 context = await browser.new_context(
                     user_agent=DEFAULT_USER_AGENT,
-                    viewport={"width": 1920, "height": 1080},
+                    viewport={"width": 1280, "height": 720},
                     locale="en-US",
                 )
                 page = await context.new_page()
+
+                # Block images, fonts, media to save memory
+                await page.route("**/*.{png,jpg,jpeg,gif,svg,webp,ico,woff,woff2,ttf,otf,mp4,webm}", lambda route: route.abort())
+                await page.route("**/ads/**", lambda route: route.abort())
+                await page.route("**/tracking/**", lambda route: route.abort())
 
                 await page.add_init_script("""
                     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});

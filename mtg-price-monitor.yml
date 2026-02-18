@@ -6,6 +6,7 @@ services:
       dockerfile: Dockerfile
     container_name: mtg-monitor-backend
     restart: unless-stopped
+    shm_size: '512mb'
     ports:
       - "8001:8000"
     volumes:
