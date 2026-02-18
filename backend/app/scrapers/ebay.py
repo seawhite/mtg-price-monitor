@@ -222,13 +222,19 @@ class EbayScraper(BaseScraper):
             listings=listings,
         )
 
-    async def _solve_challenge(self, url: str) -> dict[str, str]:
-        """Use Playwright to solve eBay's bot challenge page and return cookies."""
+    async def _solve_challenge_and_scrape(self, url: str) -> tuple[dict[str, str], str | None]:
+        """Two-phase Playwright approach: solve challenge then fetch results.
+
+        Phase 1 (JS enabled):  Load the lightweight challenge page, let JS
+            solve it, block the post-challenge redirect to avoid OOM.
+        Phase 2 (JS disabled): Open a new context with extracted cookies,
+            fetch the server-rendered search results safely.
+        """
         global _cookie_cache
         from playwright.async_api import async_playwright
 
-        logger.info("eBay: Launching Playwright to solve challenge...")
-        first_nav_done = {"value": False}
+        logger.info("eBay: Launching Playwright (two-phase challenge solve)...")
+        html = None
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -236,53 +242,78 @@ class EbayScraper(BaseScraper):
                 args=[
                     "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
                     "--disable-extensions", "--no-first-run",
-                    "--js-flags=--max-old-space-size=128",
+                    "--js-flags=--max-old-space-size=256",
                 ],
             )
-            context = await browser.new_context(
+
+            # ── Phase 1: Solve challenge (JS enabled) ──
+            ctx1 = await browser.new_context(
                 user_agent=DEFAULT_USER_AGENT,
                 viewport={"width": 800, "height": 600},
             )
-            page = await context.new_page()
+            page1 = await ctx1.new_page()
+            first_nav_done = {"value": False}
 
-            async def handle_route(route):
+            async def route_challenge(route):
                 resource = route.request.resource_type
                 req_url = route.request.url
-                # Block heavy resources
                 if resource in ("image", "font", "media", "stylesheet"):
                     await route.abort()
                     return
-                # Block page reload after challenge solves (prevent heavy search page)
+                # Block post-challenge redirect to prevent heavy search page OOM
                 if resource == "document" and first_nav_done["value"]:
-                    logger.info("eBay challenge: Blocking post-challenge navigation")
+                    logger.info("eBay challenge: Blocking post-challenge redirect")
                     await route.abort()
                     return
-                # Only allow eBay domains
                 if not any(d in req_url for d in _ALLOWED_DOMAINS):
                     await route.abort()
                     return
                 await route.continue_()
 
-            await page.route("**/*", handle_route)
+            await page1.route("**/*", route_challenge)
 
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page1.goto(url, wait_until="domcontentloaded", timeout=30000)
                 first_nav_done["value"] = True
-                # Give challenge JS time to run and set cookies
-                await page.wait_for_timeout(10000)
+                # Give challenge JS time to run, send fingerprint, set cookies
+                await page1.wait_for_timeout(10000)
             except Exception as e:
-                logger.warning(f"eBay challenge navigation: {e}")
+                logger.warning(f"eBay challenge phase 1: {e}")
 
-            cookies_list = await context.cookies()
+            cookies_list = await ctx1.cookies()
+            await ctx1.close()
+            logger.info(f"eBay challenge: Phase 1 extracted {len(cookies_list)} cookies")
+
+            # ── Phase 2: Fetch results (JS disabled, with cookies) ──
+            if cookies_list:
+                ctx2 = await browser.new_context(
+                    user_agent=DEFAULT_USER_AGENT,
+                    viewport={"width": 800, "height": 600},
+                    java_script_enabled=False,
+                )
+                await ctx2.add_cookies(cookies_list)
+                page2 = await ctx2.new_page()
+
+                try:
+                    resp = await page2.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    html = await page2.content()
+                    logger.info(f"eBay challenge: Phase 2 got HTML len={len(html)}")
+                except Exception as e:
+                    logger.warning(f"eBay challenge phase 2: {e}")
+
+                await ctx2.close()
+
             await browser.close()
 
         cookie_dict = {c["name"]: c["value"] for c in cookies_list}
-        logger.info(f"eBay challenge: Got {len(cookie_dict)} cookies")
+        logger.info(f"eBay challenge: Got {len(cookie_dict)} cookies total")
 
-        # Cache cookies for 1 hour
-        _cookie_cache["cookies"] = cookie_dict
-        _cookie_cache["expires_at"] = time.time() + 3600
-        return cookie_dict
+        # Cache cookies for future curl_cffi attempts
+        if cookie_dict:
+            _cookie_cache["cookies"] = cookie_dict
+            _cookie_cache["expires_at"] = time.time() + 300  # 5 min cache
+
+        return cookie_dict, html
 
     async def _fetch_html(self, url: str, cookies: dict | None = None) -> str:
         """Fetch eBay HTML via curl_cffi with optional cookies."""
@@ -318,16 +349,22 @@ class EbayScraper(BaseScraper):
 
         html = await self._fetch_html(search_url, cookies)
 
-        # If blocked, try solving the challenge
+        # If blocked, use Playwright to solve challenge AND get HTML directly
         if self._is_blocked(html):
-            logger.warning("eBay scrape: Blocked — attempting challenge solve")
+            logger.warning("eBay scrape: Blocked — attempting Playwright challenge solve")
             try:
-                cookies = await self._solve_challenge(search_url)
-                if cookies:
+                cookies, pw_html = await self._solve_challenge_and_scrape(search_url)
+                if pw_html and not self._is_blocked(pw_html):
+                    html = pw_html
+                    logger.info("eBay scrape: Using HTML from Playwright directly")
+                elif cookies:
+                    # Playwright got cookies but couldn't get HTML — retry with curl_cffi
                     html = await self._fetch_html(search_url, cookies)
                     if self._is_blocked(html):
                         logger.error("eBay scrape: Still blocked after challenge solve")
-                        return ScrapeResult(error="eBay challenge solve failed. Configure EBAY_CLIENT_ID and EBAY_CLIENT_SECRET for reliable access.")
+                        return ScrapeResult(error="eBay challenge solve failed. Try again or configure EBAY_CLIENT_ID/EBAY_CLIENT_SECRET.")
+                else:
+                    return ScrapeResult(error="eBay challenge solve failed — no cookies obtained.")
             except Exception as e:
                 logger.error(f"eBay challenge solve error: {e}")
                 return ScrapeResult(error=f"eBay challenge solve failed: {e}")
