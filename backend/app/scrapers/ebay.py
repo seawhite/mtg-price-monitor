@@ -2,13 +2,10 @@ import logging
 import re
 from urllib.parse import quote_plus, parse_qs, urlparse
 
+from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
 
 from app.scrapers.base import BaseScraper, DEFAULT_USER_AGENT, ListingInfo, ScrapeResult, parse_price
-
-# Only allow requests to these domains (block all ads/tracking)
-_ALLOWED_DOMAINS = {"ebay.com", "ebaystatic.com", "ebayimg.com"}
 
 logger = logging.getLogger(__name__)
 
@@ -75,58 +72,21 @@ class EbayScraper(BaseScraper):
             search_term = _extract_search_terms(search_url) if url.startswith("http") else url
             logger.info(f"eBay: Fetching {search_url} (search_term='{search_term}')")
 
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--disable-extensions",
-                        "--disable-background-networking",
-                        "--no-first-run",
-                        "--js-flags=--max-old-space-size=256",
-                    ],
+            async with AsyncSession(impersonate="chrome120") as session:
+                resp = await session.get(
+                    search_url,
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                    timeout=30,
                 )
-                context = await browser.new_context(
-                    user_agent=DEFAULT_USER_AGENT,
-                    viewport={"width": 1280, "height": 720},
-                    locale="en-US",
-                )
-                page = await context.new_page()
+                logger.info(f"eBay: Response status={resp.status_code}")
+                html = resp.text
 
-                # Block all third-party requests and unnecessary resource types
-                async def handle_route(route):
-                    url = route.request.url
-                    resource = route.request.resource_type
-                    # Block images, fonts, media, stylesheets
-                    if resource in ("image", "font", "media", "stylesheet"):
-                        await route.abort()
-                        return
-                    # Only allow requests to eBay domains
-                    if not any(d in url for d in _ALLOWED_DOMAINS):
-                        await route.abort()
-                        return
-                    await route.continue_()
-
-                await page.route("**/*", handle_route)
-
-                response = await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-                logger.info(f"eBay: Response status={response.status if response else 'None'}")
-
-                # Wait for listings to render (new s-card or legacy s-item)
-                try:
-                    await page.wait_for_selector(".s-card__price, .s-item__price", timeout=10000)
-                except Exception:
-                    logger.warning("eBay: Timed out waiting for price elements")
-
-                html = await page.content()
-                logger.info(f"eBay: HTML length={len(html)}")
-                EbayScraper.last_page_html = html
-                EbayScraper.last_page_text = ""
-
-                await browser.close()
+            logger.info(f"eBay: HTML length={len(html)}")
+            EbayScraper.last_page_html = html
+            EbayScraper.last_page_text = ""
 
             # Parse the HTML with BeautifulSoup
             soup = BeautifulSoup(html, "lxml")
