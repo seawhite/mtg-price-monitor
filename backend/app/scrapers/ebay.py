@@ -23,8 +23,8 @@ _token_cache: dict = {"token": None, "expires_at": 0}
 # Cached eBay cookies from challenge solving
 _cookie_cache: dict = {"cookies": {}, "expires_at": 0}
 
-# Domains allowed through Playwright route filter
-_ALLOWED_DOMAINS = {"ebay.com", "ebaystatic.com"}
+# Challenge failure cooldown — stop hammering eBay after failures
+_challenge_cooldown: dict = {"failed_at": 0, "consecutive_failures": 0}
 
 
 
@@ -233,15 +233,18 @@ class EbayScraper(BaseScraper):
         global _cookie_cache
         from playwright.async_api import async_playwright
 
-        logger.info("eBay: Launching Playwright challenge solver (full flow)...")
+        logger.info("eBay: Launching Playwright challenge solver (full Chromium)...")
         captured_html = {"value": None}
         initial_url_loaded = {"value": False}
 
         async with async_playwright() as p:
+            # Use full Chromium (not headless shell) with new headless mode
+            # Full browser is harder for bot detection to fingerprint
             browser = await p.chromium.launch(
-                headless=True,
+                headless=False,
                 args=[
-                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                    "--headless=new",
+                    "--no-sandbox", "--disable-gpu",
                     "--disable-extensions", "--no-first-run",
                     "--js-flags=--max-old-space-size=512",
                 ],
@@ -372,6 +375,14 @@ class EbayScraper(BaseScraper):
 
         # If blocked, use Playwright to solve challenge AND get HTML directly
         if self._is_blocked(html):
+            # Check cooldown — don't hammer eBay if challenge keeps failing
+            cooldown_secs = min(1800, 300 * max(1, _challenge_cooldown["consecutive_failures"]))
+            if (time.time() - _challenge_cooldown["failed_at"]) < cooldown_secs:
+                remaining = int(cooldown_secs - (time.time() - _challenge_cooldown["failed_at"]))
+                logger.warning(f"eBay scrape: Blocked, but challenge on cooldown ({remaining}s remaining). "
+                               f"Configure EBAY_CLIENT_ID/EBAY_CLIENT_SECRET for reliable access.")
+                return ScrapeResult(error=f"eBay blocked. Challenge solver cooling down ({remaining}s). Set up API keys for reliable access.")
+
             logger.warning("eBay scrape: Blocked — attempting Playwright challenge solve")
             try:
                 cookies, pw_html = await self._solve_challenge_and_scrape(search_url)
@@ -383,11 +394,19 @@ class EbayScraper(BaseScraper):
                     html = await self._fetch_html(search_url, cookies)
                     if self._is_blocked(html):
                         logger.error("eBay scrape: Still blocked after challenge solve")
-                        return ScrapeResult(error="eBay challenge solve failed. Try again or configure EBAY_CLIENT_ID/EBAY_CLIENT_SECRET.")
+                        _challenge_cooldown["consecutive_failures"] += 1
+                        _challenge_cooldown["failed_at"] = time.time()
+                        return ScrapeResult(error="eBay challenge solve failed. Configure EBAY_CLIENT_ID/EBAY_CLIENT_SECRET for reliable access.")
                 else:
+                    _challenge_cooldown["consecutive_failures"] += 1
+                    _challenge_cooldown["failed_at"] = time.time()
                     return ScrapeResult(error="eBay challenge solve failed — no cookies obtained.")
+                # Success — reset cooldown
+                _challenge_cooldown["consecutive_failures"] = 0
             except Exception as e:
                 logger.error(f"eBay challenge solve error: {e}")
+                _challenge_cooldown["consecutive_failures"] += 1
+                _challenge_cooldown["failed_at"] = time.time()
                 return ScrapeResult(error=f"eBay challenge solve failed: {e}")
 
         EbayScraper.last_page_html = html
