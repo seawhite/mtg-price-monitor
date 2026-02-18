@@ -223,18 +223,20 @@ class EbayScraper(BaseScraper):
         )
 
     async def _solve_challenge_and_scrape(self, url: str) -> tuple[dict[str, str], str | None]:
-        """Two-phase Playwright approach: solve challenge then fetch results.
+        """Solve eBay challenge and capture search results in one pass.
 
-        Phase 1 (JS enabled):  Load the lightweight challenge page, let JS
-            solve it, block the post-challenge redirect to avoid OOM.
-        Phase 2 (JS disabled): Open a new context with extracted cookies,
-            fetch the server-rendered search results safely.
+        1. Load challenge page with JS enabled (lightweight 14KB)
+        2. Challenge JS runs, solves, triggers redirect
+        3. Intercept redirect: forward request to eBay (gets Set-Cookie headers
+           and full HTML), but feed browser a tiny body to prevent OOM
+        4. Return both cookies and captured HTML
         """
         global _cookie_cache
         from playwright.async_api import async_playwright
 
-        logger.info("eBay: Launching Playwright (two-phase challenge solve)...")
-        html = None
+        logger.info("eBay: Launching Playwright challenge solver...")
+        captured_html = {"value": None}
+        first_nav_done = {"value": False}
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -245,73 +247,88 @@ class EbayScraper(BaseScraper):
                     "--js-flags=--max-old-space-size=256",
                 ],
             )
-
-            # ── Phase 1: Solve challenge (JS enabled) ──
-            ctx1 = await browser.new_context(
+            context = await browser.new_context(
                 user_agent=DEFAULT_USER_AGENT,
                 viewport={"width": 800, "height": 600},
             )
-            page1 = await ctx1.new_page()
-            first_nav_done = {"value": False}
+            page = await context.new_page()
 
-            async def route_challenge(route):
+            async def route_handler(route):
                 resource = route.request.resource_type
                 req_url = route.request.url
+
+                # Block heavy resources
                 if resource in ("image", "font", "media", "stylesheet"):
                     await route.abort()
                     return
-                # Block post-challenge redirect to prevent heavy search page OOM
-                if resource == "document" and first_nav_done["value"]:
-                    logger.info("eBay challenge: Blocking post-challenge redirect")
-                    await route.abort()
-                    return
+
+                # Only allow eBay domains
                 if not any(d in req_url for d in _ALLOWED_DOMAINS):
                     await route.abort()
                     return
+
+                # For post-challenge document requests: intercept the redirect
+                if resource == "document" and first_nav_done["value"]:
+                    try:
+                        # Forward request to eBay to get Set-Cookie + HTML
+                        response = await route.fetch()
+                        # Capture the real HTML body
+                        body_bytes = await response.body()
+                        captured_html["value"] = body_bytes.decode("utf-8", errors="replace")
+                        logger.info(
+                            f"eBay challenge: Intercepted redirect "
+                            f"(status={response.status}, body={len(captured_html['value'])})"
+                        )
+                        # Feed browser the response headers (Set-Cookie!) but tiny body
+                        await route.fulfill(
+                            response=response,
+                            body="<html><head><title>Done</title></head></html>",
+                        )
+                    except Exception as e:
+                        logger.warning(f"eBay challenge: Redirect intercept failed: {e}")
+                        await route.abort()
+                    return
+
                 await route.continue_()
 
-            await page1.route("**/*", route_challenge)
+            await page.route("**/*", route_handler)
 
             try:
-                await page1.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 first_nav_done["value"] = True
-                # Give challenge JS time to run, send fingerprint, set cookies
-                await page1.wait_for_timeout(10000)
+
+                # Wait for challenge JS to solve and trigger redirect
+                for i in range(15):  # 15 × 1s = 15s max
+                    await page.wait_for_timeout(1000)
+                    if captured_html["value"] is not None:
+                        logger.info(f"eBay challenge: Redirect captured after {i+1}s")
+                        break
+                else:
+                    # No redirect captured — wait a bit more for cookies from XHR
+                    logger.warning("eBay challenge: No redirect captured in 15s")
+                    await page.wait_for_timeout(5000)
+
             except Exception as e:
-                logger.warning(f"eBay challenge phase 1: {e}")
+                logger.warning(f"eBay challenge navigation error: {e}")
 
-            cookies_list = await ctx1.cookies()
-            await ctx1.close()
-            logger.info(f"eBay challenge: Phase 1 extracted {len(cookies_list)} cookies")
-
-            # ── Phase 2: Fetch results (JS disabled, with cookies) ──
-            if cookies_list:
-                ctx2 = await browser.new_context(
-                    user_agent=DEFAULT_USER_AGENT,
-                    viewport={"width": 800, "height": 600},
-                    java_script_enabled=False,
-                )
-                await ctx2.add_cookies(cookies_list)
-                page2 = await ctx2.new_page()
-
-                try:
-                    resp = await page2.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    html = await page2.content()
-                    logger.info(f"eBay challenge: Phase 2 got HTML len={len(html)}")
-                except Exception as e:
-                    logger.warning(f"eBay challenge phase 2: {e}")
-
-                await ctx2.close()
-
+            # Extract all cookies (challenge page + redirect response)
+            try:
+                cookies_list = await context.cookies()
+            except Exception:
+                cookies_list = []
             await browser.close()
 
         cookie_dict = {c["name"]: c["value"] for c in cookies_list}
-        logger.info(f"eBay challenge: Got {len(cookie_dict)} cookies total")
+        html = captured_html["value"]
+        logger.info(
+            f"eBay challenge: {len(cookie_dict)} cookies, "
+            f"HTML={'yes ' + str(len(html)) if html else 'no'}"
+        )
 
-        # Cache cookies for future curl_cffi attempts
+        # Cache cookies
         if cookie_dict:
             _cookie_cache["cookies"] = cookie_dict
-            _cookie_cache["expires_at"] = time.time() + 300  # 5 min cache
+            _cookie_cache["expires_at"] = time.time() + 300
 
         return cookie_dict, html
 
