@@ -2,10 +2,13 @@ import logging
 import re
 from urllib.parse import quote_plus, parse_qs, urlparse
 
-import httpx
 from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 from app.scrapers.base import BaseScraper, DEFAULT_USER_AGENT, ListingInfo, ScrapeResult, parse_price
+
+# Only allow requests to these domains (block all ads/tracking)
+_ALLOWED_DOMAINS = {"ebay.com", "ebaystatic.com", "ebayimg.com"}
 
 logger = logging.getLogger(__name__)
 
@@ -72,21 +75,58 @@ class EbayScraper(BaseScraper):
             search_term = _extract_search_terms(search_url) if url.startswith("http") else url
             logger.info(f"eBay: Fetching {search_url} (search_term='{search_term}')")
 
-            headers = {
-                "User-Agent": DEFAULT_USER_AGENT,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Cache-Control": "no-cache",
-            }
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                resp = await client.get(search_url, headers=headers)
-                logger.info(f"eBay: Response status={resp.status_code}")
-                html = resp.text
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-extensions",
+                        "--disable-background-networking",
+                        "--no-first-run",
+                        "--js-flags=--max-old-space-size=256",
+                    ],
+                )
+                context = await browser.new_context(
+                    user_agent=DEFAULT_USER_AGENT,
+                    viewport={"width": 1280, "height": 720},
+                    locale="en-US",
+                )
+                page = await context.new_page()
 
-            EbayScraper.last_page_html = html
-            EbayScraper.last_page_text = ""
-            logger.info(f"eBay: HTML length={len(html)}")
+                # Block all third-party requests and unnecessary resource types
+                async def handle_route(route):
+                    url = route.request.url
+                    resource = route.request.resource_type
+                    # Block images, fonts, media, stylesheets
+                    if resource in ("image", "font", "media", "stylesheet"):
+                        await route.abort()
+                        return
+                    # Only allow requests to eBay domains
+                    if not any(d in url for d in _ALLOWED_DOMAINS):
+                        await route.abort()
+                        return
+                    await route.continue_()
+
+                await page.route("**/*", handle_route)
+
+                response = await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                logger.info(f"eBay: Response status={response.status if response else 'None'}")
+
+                # Wait for listings to render (new s-card or legacy s-item)
+                try:
+                    await page.wait_for_selector(".s-card__price, .s-item__price", timeout=10000)
+                except Exception:
+                    logger.warning("eBay: Timed out waiting for price elements")
+
+                html = await page.content()
+                logger.info(f"eBay: HTML length={len(html)}")
+                EbayScraper.last_page_html = html
+                EbayScraper.last_page_text = ""
+
+                await browser.close()
 
             # Parse the HTML with BeautifulSoup
             soup = BeautifulSoup(html, "lxml")
@@ -94,20 +134,21 @@ class EbayScraper(BaseScraper):
             listings = []
             seen_ids = set()
 
-            # Strategy 1: Try legacy .s-item selector
-            items = soup.select(".s-item")
-            logger.info(f"eBay: .s-item found {len(items)} elements")
+            # Strategy 1: Try new s-card selector
+            items = soup.select("li.s-card")
+            logger.info(f"eBay: li.s-card found {len(items)} elements")
 
-            # Strategy 2: If no .s-item, find <li> children of ul.srp-results
+            # Strategy 2: Try legacy .s-item selector
+            if not items:
+                items = soup.select(".s-item")
+                logger.info(f"eBay: .s-item found {len(items)} elements")
+
+            # Strategy 3: find <li> children of ul.srp-results
             if not items:
                 results_ul = soup.select_one("ul.srp-results")
                 if results_ul:
                     items = results_ul.find_all("li", recursive=False)
                     logger.info(f"eBay: ul.srp-results > li found {len(items)} elements")
-                    if items:
-                        # Log the classes of first few items for debugging
-                        for i, it in enumerate(items[:3]):
-                            logger.info(f"eBay: li[{i}] classes={it.get('class', [])}, id={it.get('id', '')}")
 
             for item in items:
                 try:
@@ -127,7 +168,7 @@ class EbayScraper(BaseScraper):
 
                     # Extract title: try known selectors, then fall back to link text
                     title = ""
-                    for title_sel in [".s-item__title", "[class*='title']", "h3", "span[role='heading']"]:
+                    for title_sel in [".s-card__title", ".s-item__title", "h3", "span[role='heading']"]:
                         title_el = item.select_one(title_sel)
                         if title_el:
                             title = title_el.get_text(strip=True)
@@ -153,7 +194,7 @@ class EbayScraper(BaseScraper):
                     shipping_keywords = {"shipping", "delivery", "postage", "original",
                                         "was", "strikethrough", "secondary", "additional"}
 
-                    for price_sel in [".s-item__price", "[class*='price']"]:
+                    for price_sel in [".s-card__price", ".s-item__price", "[class*='price']"]:
                         for price_el in item.select(price_sel):
                             # Skip shipping/secondary price elements
                             el_classes = " ".join(price_el.get("class", [])).lower()
@@ -212,9 +253,12 @@ class EbayScraper(BaseScraper):
                 results_ul = soup.select_one("ul.srp-results")
                 if results_ul:
                     children = results_ul.find_all("li", recursive=False)
-                    logger.warning(f"eBay: {len(children)} <li> in ul.srp-results but 0 parsed. First child HTML (500 chars): {str(children[0])[:500] if children else 'NONE'}")
+                    first_html = str(children[0])[:500] if children else 'NONE'
+                    logger.warning(f"eBay: {len(children)} <li> in ul.srp-results but 0 parsed. First child HTML: {first_html}")
                 else:
-                    logger.warning("eBay: No ul.srp-results found at all")
+                    # Log a snippet of the page for debugging
+                    logger.warning(f"eBay: No ul.srp-results found. Page title: {soup.title.string if soup.title else 'N/A'}")
+                    logger.warning(f"eBay: HTML snippet (first 1000 chars): {html[:1000]}")
 
             lowest_price = min((l.price for l in listings), default=None)
             available = len(listings) > 0
